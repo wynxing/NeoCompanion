@@ -73,6 +73,11 @@ NeoCompanion 是一个完全本地运行的桌面应用。
 
 ### 3.1 High-Level Architecture
 
+系统提供三种灵活的挂载拓扑，以满足本地低门槛开发、绝对高安全零端口冲突、以及跨物理机算力卸载等多样化极客场景：
+
+#### 模式 A：本地 TCP 端口挂载 (默认模式 - Local TCP Port)
+*最便利的 Web 级开发与浏览器调试生态，兼容性最佳。*
+
 ```
 ┌─ Tauri App ──────────────────────────────────────────────┐
 │                                                            │
@@ -102,16 +107,85 @@ NeoCompanion 是一个完全本地运行的桌面应用。
                 └────────────────┘
 ```
 
+#### 模式 B：零端口本地域套接字挂载 (Zero-Port IPC Socket)
+*100% 避免本地网络端口冲突，绕过防火墙，极高通信效率与低延迟。*
+
+```
+┌─ Tauri App (模式 B - UDS 零端口桥接) ─────────────────────────┐
+│                                                               │
+│  ┌─ Rust Core ───────────(UDS Proxy Bridge)──────────┐        │
+│  │  系统级能力 │ UDS 代理通道 (`uds_request` 命令接口) │        │
+│  │  axum 内部端点 (监听 unix:neo-core.sock)           │        │
+│  └────────▲───────────────────────────────▲────────┘        │
+│           │                               │                   │
+│       Tauri IPC Bridge                Unix Domain Socket      │
+│       (`uds_request` 异步代理转发)    (双向穿透 / 零端口)     │
+│           │                               │                   │
+│  ┌─ WebView (React) ──────────────────┐   │                   │
+│  │  桌宠 UI │ 对话面板 │ 任务面板 │ 设置│   │                   │
+│  │  api-client (UDS Adapter 适配器)   │   │                   │
+│  └────────────────────────────────────┘   │                   │
+│                                           ▼                   │
+│  ┌─ Fastify Sidecar (绑定 UDS / 零端口) ────────────────────┐ │
+│  │  业务逻辑 │ AI 调度 │ 上下文管道 │ SQLite                  │ │
+│  │  (监听 unix:neo-companion.sock)                          │ │
+│  │  ▲ 调用系统向量库 → 请求 unix:neo-core.sock (axum 侧)      │ │
+│  └──────────────────┬───────────────────────────────────────┘ │
+│                     │                                         │
+└─────────────────────┼─────────────────────────────────────────┘
+                      │ HTTPS (外部)
+                ┌─────▼──────────┐
+                │  LLM API       │
+                └────────────────┘
+```
+
+#### 模式 C：分布式远程宿主挂载 (Distributed Remote Hosting)
+*将繁重的 SQLite 读写与 LanceDB 向量检索卸载至 NAS 或私有云服务器，降低工作机负载。*
+
+```
+┌─ Local Client (本地 Tauri 客户端) ───────────────────────────┐
+│                                                               │
+│  ┌─ Rust Core (仅做轻量级本地系统事件抓取) ───────────┐        │
+│  │  本地窗口检测 │ 系统托盘管理 │ 快捷键拦截             │        │
+│  └────────┬───────────────────────────────────────────┘        │
+│           │ Tauri IPC Event                                   │
+│  ┌────────▼───────────────────────────────────────────┐        │
+│  │  WebView (React)                                   │        │
+│  │  api-client (Remote HTTP/WS Adapter + JWT 授权头)  │        │
+│  └────────┬───────────────────────────────────────────┘        │
+│           │                                                   │
+└───────────┼───────────────────────────────────────────────────┘
+            │
+            │  HTTPS + WSS / JWT 握手安全连接 (局域网/公网)
+            ▼
+┌─ Remote Server (模式 C - 远程宿主机如 NAS/私有云) ────────────┐
+│                                                               │
+│  ┌─ Fastify Server (远程自持运行服务) ───────────────────────┐ │
+│  │  业务逻辑主核 │ AI 编排 │ 上下文管道                         │ │
+│  │  Drizzle SQLite 关系型数据库 (远程 .db 文件)              │ │
+│  │  Node 原生 LanceDB 向量数据库 (本地依赖无编译打包体积限制)  │ │
+│  └──────────────────┬───────────────────────────────────────┘ │
+│                     │                                         │
+└─────────────────────┼─────────────────────────────────────────┘
+                      │ HTTPS (外部)
+                ┌─────▼──────────┐
+                │  LLM API       │
+                └────────────────┘
+```
+
+---
+
 ### 3.2 Communication Patterns
 
-| 通信路径 | 协议 | 用途 |
-|----------|------|------|
-| WebView ↔ Rust Core | Tauri IPC (`invoke` / `listen`) | 系统级能力调用、事件订阅 |
-| WebView → Fastify | HTTP (fetch + TanStack Query) | 业务请求 (CRUD) |
-| WebView ↔ Fastify | WebSocket (`ws://localhost:PORT/ws`) | AI 流式响应、陪伴反馈推送、实时事件 |
-| Fastify → Rust Core | HTTP (`localhost:RUST_PORT`, internal) | 系统级能力调用（向量检索等）。**内部实现通道，非业务 API** |
-| Fastify → LLM API | HTTPS | 外部模型调用 |
-| Rust Core → Fastify | HTTP (localhost) | 系统事件推送 (窗口切换等) |
+系统采用多挂载统一抽象层，三种模式下各通道的物理路由与网络流向如下表所示：
+
+| 通信路径 | 模式 A (本地 TCP Port) | 模式 B (零端口 UDS Socket) | 模式 C (远程宿主 Hosting) |
+|---|---|---|---|
+| **WebView → Fastify (API 请求)** | HTTP 请求 (`fetch` 协议)<br>目标: `http://localhost:PORT` | Tauri Rust IPC Bridge<br>WebView 调 `uds_request`<br>Rust 转发至 `neo-companion.sock` | HTTPS 请求 (`fetch` 协议)<br>目标: 远程 NAS URL<br>附带 JWT 握手鉴权头 |
+| **WebView ↔ Fastify (实时推送)** | 标准 WebSocket 连接<br>目标: `ws://localhost:PORT/ws` | Tauri Rust WS Proxy Bridge<br>Tauri 代理在 UDS 上双向转换 Web Socket 数据流 | 安全 WSS 握手加密连接<br>目标: `wss://REMOTE_IP/ws`<br>附带 JWT 安全校验 |
+| **Fastify → Rust Core (系统向量检索)** | 内部 HTTP 调用<br>目标: `http://127.0.0.1:RUST_PORT` | UDS 套接字内部通信<br>目标: `neo-core.sock`<br>（100% 绝对零端口占用） | **无需跨机调用 Rust Core**<br>远程 Fastify 直接本地加载并读写 Node 版 `@lancedb/lancedb` |
+| **Rust Core → Fastify (系统事件同步)** | 内部 HTTP 推送<br>目标: `http://localhost:PORT/events` | UDS 套接字文件直写<br>目标: `neo-companion.sock` | 本地 WebView 拦截 Rust 事件，通过安全 HTTPS 转推远端服务器 |
+| **外部 Hook 注入 (如 OpenClaw)** | HTTP POST 推送<br>目标: `/api/hook/push` | **File Watcher Hook** (免网络文件监听)<br>或直连 `neo-companion.sock` | HTTPS 推送 (带 API Key/JWT)<br>目标: 远程主机 API |
 
 **为什么用 WebSocket？**
 
@@ -172,10 +246,51 @@ type ServerMessageType =
 | 重连策略 | 指数退避 | 1s → 2s → 4s → 8s → 16s → 30s (cap) |
 | 重连后恢复 | 重新发送 subscribe 消息 | 确保不丢失实时更新 |
 
+
 #### 3.2.4 依赖
 
 - Server: `@fastify/websocket` 插件
 - Client: 原生 `WebSocket` API + 轻量封装 (reconnect + 消息分发)
+
+#### 3.2.5 渐进式多挂载传输架构 (Progressive Multi-Mount Transport Architecture)
+
+为给开发人员和高端用户提供极致的灵活性与部署弹性，系统采用“传输接口抽象 + 渐进式多挂载通信设计”。
+
+##### 1. 传输层接口抽象 (Transport Abstraction)
+客户端（WebView）通过统一的接口与底层逻辑通信，屏蔽具体物理协议和连接形态：
+
+```typescript
+export interface TransportProvider {
+  request<T>(path: string, payload?: unknown): Promise<T>;
+  subscribe(event: string, callback: (payload: any) => void): () => void;
+  sendEvent(event: string, payload: unknown): void;
+  connect(): Promise<void>;
+  disconnect(): Promise<void>;
+}
+```
+
+##### 2. 后端主服务三种“挂载绑定模式” (Backend Mounting Modes)
+系统支持在设置或环境变量中动态切换不同的后端绑定与托管形态：
+
+* **A. 本地 TCP 端口挂载 (Local TCP Port - 默认模式)**
+  * **协议**: Local Loopback TCP (HTTP + WebSocket)
+  * **地址**: `http://localhost:PORT` & `ws://localhost:PORT/ws`
+  * **特点**: 兼容性与标准化程度高，极为便利的 Web 级开发与浏览器调试生态。
+* **B. 零端口本地域套接字挂载 (Zero-Port IPC Socket - 高安稳定)**
+  * **协议**: Unix Domain Sockets (UDS) / Windows Named Pipes
+  * **地址**: macOS/Linux: `/tmp/neo-companion.sock` | Windows: `\\.\pipe\neo-companion`
+  * **特点**: **100% 避免本地网络端口冲突**，彻底绕过操作系统防火墙（无网络警告弹窗），且进程间通信吞吐率和延迟表现均优于 TCP 回环。
+* **C. 分布式远程宿主挂载 (Distributed Remote Hosting - 算力与漫游)**
+  * **协议**: HTTPS + WSS + JWT 握手鉴权
+  * **地址**: 用户自定义远程 NAS、局域网服务器或公网主机 URL
+  * **特点**: 将繁重的 LanceDB 向量检索、Drizzle SQLite 读写及 OpenClaw GUI 编排卸载到**家用 NAS 或专属服务器**中，极大降低本地工作电脑的 CPU 与内存负载。同时实现跨办公室与家庭多设备的**桌宠性格、记忆和待办漫游同步**。
+
+
+##### 3. 多通道 Hook 挂载机制 (Multi-channel Hook Mounts)
+除了标准的 HTTP REST 推送，系统提供更加优雅的第三方 Hook 注入通道：
+* **文件系统哨兵挂载 (File Watcher Hook)**：Fastify 侧监听特定本地文件目录（如 `~/.neo-companion/hooks/`）的 JSON 文件覆盖写入。自定义编译/自动化脚本无需调用 curl 网络请求，直接 `echo '...' > hooks/git.json` 即可静默挂载桌宠动态，极大降低 Hook 编写难度并确保在无网环境下 100% 可用。
+* **标准流管道挂载 (Stdio Pipe Hook)**：在 Tauri 启动外部 Agent（如 OpenClaw）子进程时，直接将其标准输出流（stdout/stderr）挂载并拦截，实现“零端口占用”的状态提取。
+* **局域网消息总线挂载 (MQTT / HA Hook)**：支持 Fastify 挂载作为 MQTT 客户端订阅家庭局域网消息队列，实现与实体智能家居/智能传感器的桌宠状态联动。
 
 ### 3.3 Capability Model → Technical Module Mapping
 
@@ -299,7 +414,7 @@ packages/db → packages/shared
 
 ### 5.1 Rust Core 职责
 
-Rust 侧只负责 WebView 和 Node.js 无法直接完成的系统级能力：
+Rust 侧只负责 WebView 和 Node.js 无法直接完成的系统级能力，并在零端口模式下充当关键的通信桥梁：
 
 | 能力 | 说明 | 阶段 |
 |------|------|------|
@@ -308,10 +423,13 @@ Rust 侧只负责 WebView 和 Node.js 无法直接完成的系统级能力：
 | 全局快捷键 | 唤醒/隐藏/快速操作 | v1 |
 | Sidecar 管理 | 启动/停止 Fastify 进程、健康检查 | v1 |
 | 应用切换事件 | 监听焦点变化、推送事件到 Fastify | v1 |
+| UDS/管道 IPC 代理 | **模式 B 下的通信关键**。由于 Webview 浏览器沙箱限制无法直接访问 Unix 套接字与命名管道，由 Rust Core 建立原生 IPC 连接并作为 Bridge 双向透传 WebView 与 Fastify 间的 API 请求与推送事件 | v2 |
+| 子进程 stdio 挂载 | 当启动外部 CLI（如 OpenClaw）时，以管道挂载其标准输出，拦截捕获微观状态 | v2 |
 | 屏幕内容获取 | 用户授权下截图/OCR (v2) | v2 |
 | 选中文本提取 | 获取用户选中内容 (v2) | v2 |
-| 文件系统监听 | 监听指定目录变化 (v2) | v2 |
-| 内部 HTTP 端点 | 暴露 localhost-only 系统能力接口供 Fastify 调用（如 LanceDB 向量操作、钥匙链读取）。**内部实现通道，不承载业务逻辑** | v1 |
+| 文件系统监听 | 监听指定目录变化 (v2)。在模式 B 中用于挂载文件监听哨兵 (File Watcher) | v2 |
+| 内部能力通信端点 | **模式 A** 下暴露 localhost-only 系统接口（如向量操作、钥匙链读取）；**模式 B** 下通过本地域套接字 (unix:neo-core.sock) 通信，实现 100% 绝对零网络端口占用；**模式 C** 下该端点不参与数据库交互。**内部实现通道，不承载业务逻辑** | v1 |
+
 
 ### 5.2 Tauri IPC 接口设计
 
@@ -325,32 +443,50 @@ fn get_active_window() -> Result<WindowInfo, String> { ... }
 fn get_running_apps() -> Result<Vec<AppInfo>, String> { ... }
 
 #[tauri::command]
-fn start_sidecar(port: u16) -> Result<(), String> { ... }
+fn start_sidecar(config: SidecarConfig) -> Result<(), String> { ... }
 
 #[tauri::command]
 fn stop_sidecar() -> Result<(), String> { ... }
 
 #[tauri::command]
 fn set_tray_status(status: CompanionStatus) -> Result<(), String> { ... }
+
+// UDS/命名管道 IPC 代理桥接命令 (用于模式 B 沙箱穿透)
+#[tauri::command]
+async fn uds_request(
+  path: String, 
+  method: String, 
+  payload: Option<serde_json::Value>
+) -> Result<serde_json::Value, String> { ... }
 ```
 
 ### 5.3 Sidecar 生命周期
 
+Sidecar 进程根据挂载模式进行动态初始化：
+
 ```
 Tauri App 启动
     │
-    ├─ 1. Rust 初始化 (托盘、快捷键、事件监听)
+    ├─ 1. Rust 初始化 (托盘、快捷键、事件监听、初始化 UDS 代理通道)
     │
-    ├─ 2. 启动 Fastify Sidecar (子进程)
-    │      ├─ 选择可用端口
-    │      ├─ 启动 Node.js 进程
-    │      └─ 健康检查 (GET /health)
+    ├─ 2. 判断运行模式 (读取 Settings 关系数据库/配置文件)
+    │      │
+    │      ├─ [模式 A/C: 本地 TCP 或远程] 
+    │      │      ├─ 启动 Fastify Sidecar (传入可用端口参数 --port)
+    │      │      └─ 健康检查 (GET http://localhost:PORT/health)
+    │      │
+    │      └─ [模式 B: UDS/命名管道套接字] 
+    │             ├─ 清理残留套接字文件 (如删除旧 /tmp/neo-companion.sock)
+    │             ├─ 启动 Fastify Sidecar (传入 UDS 套接字路径参数 --socket)
+    │             └─ 建立套接字健康探针 (探针连通测试)
     │
     ├─ 3. WebView 加载 React 应用
-    │      └─ 连接本地 Fastify (localhost:PORT)
+    │      ├─ 模式 A/C: 建立标准 Local/Remote HTTP 与 WebSockets 链接
+    │      └─ 模式 B: 启用 UDS IPC 代理，所有请求均通过 uds_request 转发
     │
     └─ App 退出时
-           └─ 关闭 Sidecar 进程
+           ├─ 关闭 Sidecar 子进程并清理已创建的 UDS 文件/管道实例
+           └─ 释放相关系统资源
 ```
 
 ### 5.4 WebView (React) 架构
@@ -444,15 +580,16 @@ packages/server-local/src/
 │   │   └── service.ts       # 复盘生成
 │   ├── hook/
 │   │   ├── routes.ts        # /api/hooks/* (包含 /api/hook/push 与 /api/hook/permission)
-│   │   ├── service.ts       # Hook 自动配置扫描、审批流程内存 Promise 挂起与状态机引擎
+│   │   ├── service.ts       # Hook 自动配置扫描、免代码文件监听哨兵 (Watcher)、局域网 MQTT 订阅器、审批流程内存 Promise 挂起与状态机引擎
 │   │   └── schema.ts        # Hook 接口数据校验 Schema
 │   └── settings/
 │       ├── routes.ts        # /api/settings/*
 │       └── service.ts       # 用户设置、模型配置
 └── plugins/
     ├── db.ts                # SQLite 连接插件
+    ├── transport.ts         # **模式 A/B 绑定核心**：自动根据启动参数监听 TCP Port 或 Unix Domain Socket / Windows Named Pipe
     ├── websocket.ts         # WebSocket 连接管理 (@fastify/websocket)
-    ├── cors.ts              # CORS (localhost)
+    ├── cors.ts              # CORS (localhost/CORS 策略配置)
     └── error-handler.ts     # 统一错误处理
 ```
 
@@ -874,15 +1011,15 @@ export const settings = sqliteTable('settings', {
 });
 ```
 
-### 9.3 Vector Storage (LanceDB in Rust Core)
+### 9.3 Vector Storage (LanceDB in Rust Core / Remote Native)
 
-语义记忆的向量存储与相似度检索使用 **LanceDB**，内嵌在 **Tauri Rust Core** 中，规避 Node.js 原生 C 库在 Sidecar 跨平台分发时的兼容性问题。
+语义记忆的向量存储与相似度检索架构，根据不同的挂载模式进行动态演化，以取得体积、性能与可扩展性的完美平衡：
 
-SQLite 负责保存记忆的元数据和文本（`memories` 表），Rust 侧的 LanceDB 负责存储 `(id, embedding)` 索引并处理语义查询。
+- **模式 A (本地 TCP 端口 - 默认)**：语义检索使用 **LanceDB**，内嵌在 **Tauri Rust Core** 中。这规避了 Node.js 原生 C 库在 Node Sidecar 跨平台分发打包时的动态链接编译兼容性问题。SQLite 负责保存记忆元数据（`memories` 表），Rust Core 侧的 LanceDB 负责存储 `(id, embedding)` 索引。Fastify 通过 Rust Core 的 **localhost-only 内部 HTTP 端点** 访问 LanceDB。
+- **模式 B (零端口本地域套接字)**：拓扑与模式 A 一致，但 Fastify 摒弃 TCP 端口，而是通过本地域套接字 / 命名管道安全连接 Rust 侧内部的 **UDS 能力通信端点** (`neo-core.sock`)，进行极速向量检索。这实现了 100% 的防火墙免疫与绝对零网络端口占用。
+- **模式 C (分布式远程宿主)**：由于 Fastify 服务独立托管于远端服务器（如群晖/威联通 NAS、私有 Docker 云），**不依赖本地客户端的 Rust Core**。在此模式下，远端 Fastify **自持全套数据库**：因为服务端环境（如 Linux Server）没有桌面客户端极端的跨平台打包体积和动态编译库链接限制，Fastify 可直接运行原生 `@lancedb/lancedb` Node 库（直读本地 `.db`），与 SQLite 共同部署。这完全卸载了本地工作电脑的计算负载，且支持多设备共用一个远程桌宠记忆体。
 
-Fastify 通过 Rust Core 的 **localhost-only 内部 HTTP 端点** 访问 LanceDB。该端点是内部实现通道，不对外暴露，不承载业务逻辑。
-
-#### 9.3.1 Rust Core 内部 HTTP 端点
+#### 9.3.1 Rust Core 内部能力通信端点 (模式 A/B 专属)
 
 Rust 侧使用 axum 启动一个轻量 HTTP server，绑定 `127.0.0.1:RUST_PORT`，仅暴露向量操作接口：
 
@@ -1075,6 +1212,24 @@ export async function autoPatchOpenClawConfig(localServerPort: number) {
 ### 10.2 异步 Promise 审批挂起机制 (Promise-based Suspension Pipeline)
 
 当外部 Executor (如 OpenClaw) 发起涉及系统敏感指令（如危险脚本执行或文件覆写）的请求时，Fastify 端通过**内存挂起 Promise** 机制阻断 HTTP 请求，直至用户审批或超时。
+
+#### 10.2.0 零端口模式 (Mode B) 下外部 Hook 的三维连通机制
+
+在 **模式 B (零端口模式)** 下，本地没有开放任何 TCP 端口，外部 Executor 无法通过标准 localhost TCP 网络直接连接。为此，系统采用“免网络文件哨兵 + 原生 UDS + 局域回环代理”的三维通信保障：
+
+1. **文件监听哨兵 (File Watcher Hook - 推荐)**：
+   对于无需双向阻塞审批的“单向状态推送类” Hook（如 Webpack 编译结果、Git commit 事件、CI/CD 部署成功等），外部自定义脚本无需发起任何网络请求。只需将标准 JSON 数据直接覆盖写入系统监听文件夹：
+   ```bash
+   # 单行 Shell 命令即可触发桌宠喂食/欢呼动作，100% 离线、零端口、极简极客体验
+   echo '{"state":"success","description":"Git build pass"}' > ~/.neo-companion/hooks/git.json
+   ```
+   Fastify Sidecar 配合 Rust 侧的 `plugin-app-events` 文件系统哨兵，高灵敏度拦截该文件写入事件并秒级推送至 WebView，彻底免除端口冲突之忧。
+   
+2. **原生本地域套接字挂载 (Native UDS Mount)**：
+   若外部 Agent (如 OpenClaw) 原生支持套接字协议，可直接通过 `unix:/tmp/neo-companion.sock:/api/hook/permission` 进行连接，实现端到端的绝对高安全零端口双向审批。
+   
+3. **轻量回环 TCP 端口代理 (Local TCP Proxy Gateway)**：
+   为兼容不支持 UDS 协议的传统 TCP-only 工具，Tauri Rust Core 可在需要时临时且极其受限地启用一个 localhost TCP 回环网关端口，仅接收本机回环请求并高安全地路由代理给底层的 Unix 套接字 / Windows 命名管道，兼顾向后兼容与沙箱安全。
 
 ```
 [Agent/Executor]                         [Fastify Server]                      [WebView / React UI]
