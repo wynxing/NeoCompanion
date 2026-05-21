@@ -1,7 +1,7 @@
 # NeoCompanion 产品介绍与设计书
 
-[![Status](https://img.shields.io/badge/Status-Draft--Approved--v3.0-blue.svg)](#)
-[![Version](https://img.shields.io/badge/Version-3.0-green.svg)](#)
+[![Status](https://img.shields.io/badge/Status-Draft--Approved--v3.2-blue.svg)](#)
+[![Version](https://img.shields.io/badge/Version-3.2-green.svg)](#)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](#)
 
 ---
@@ -105,5 +105,5 @@ NeoCompanion 的产品能力由浅入深分为以下四个层次：
 
 * [**具体能力构思**](file:///d:/character_design/NeoCompanion/docs/%E5%85%B7%E4%BD%93%E8%83%BD%E5%8A%9B%E6%9E%84%E6%80%9D.md) (`docs/具体能力构思.md`) —— **本项目的核心产品规划与详细设计说明**。
 * [**总景产品需求文档**](file:///d:/character_design/NeoCompanion/docs/PRD_overview.md) (`docs/PRD_overview.md`) —— 系统核心能力边界、多层能力模型定义。
-* [**系统架构设计**](file:///d:/character_design/NeoCompanion/docs/ARCHITECTURE.md) (`docs/ARCHITECTURE.md`) —— Tauri (Rust) + Fastify (TS Node Sidecar) + React 多端通信细节、LanceDB 向量交互、Promise 异步阻断挂起架构以及全局热键拦截设计的工程底座。
+* [**系统架构设计**](file:///d:/character_design/NeoCompanion/docs/ARCHITECTURE.md) (`docs/ARCHITECTURE.md`) —— Tauri (Rust) + Fastify (TS Node Sidecar) + Vue 多端通信细节、LanceDB 向量交互、Promise 异步阻断挂起架构以及全局热键拦截设计的工程底座。
 * [**开发行为规范**](file:///d:/character_design/NeoCompanion/AGENTS.md) (`AGENTS.md`) —— 团队协作与 LLM 编码纠错的行为准则。
