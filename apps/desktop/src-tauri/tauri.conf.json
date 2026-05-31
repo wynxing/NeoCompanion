@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NeoCompanion",
+  "version": "0.1.0",
+  "identifier": "com.neocompanion.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev:web",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "NeoCompanion",
+        "label": "main",
+        "url": "/?view=pet",
+        "width": 320,
+        "height": 540,
+        "minWidth": 300,
+        "minHeight": 500,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "skipTaskbar": true,
+        "center": true
+      },
+      {
+        "title": "NeoCompanion",
+        "label": "panel",
+        "url": "/?view=panel",
+        "width": 944,
+        "height": 744,
+        "minWidth": 560,
+        "minHeight": 640,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": false,
+        "resizable": true,
+        "skipTaskbar": false,
+        "visible": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": []
+  }
+}
