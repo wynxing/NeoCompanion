@@ -7,10 +7,12 @@ import { usePetState } from "./composables/usePetState";
 import { useFocus } from "./composables/useFocus";
 import { useTasks } from "./composables/useTasks";
 import { useChat } from "./composables/useChat";
+import { usePermission } from "./composables/usePermission";
 
 import PetStage from "./components/pet/PetStage.vue";
 import SpeechBubble from "./components/pet/SpeechBubble.vue";
 import PetStatusBar from "./components/pet/PetStatusBar.vue";
+import PermissionBubble from "./components/pet/PermissionBubble.vue";
 
 import PanelHeader from "./components/panel/PanelHeader.vue";
 import TabNav from "./components/panel/TabNav.vue";
@@ -30,6 +32,7 @@ const pet = usePetState();
 const focus = useFocus();
 const tasks = useTasks();
 const chat = useChat();
+const permission = usePermission();
 
 const weather = ref<WeatherSummary | null>(null);
 const lastWindow = ref<WindowSnapshot | null>(null);
@@ -68,6 +71,7 @@ function handleWsMessage(message: WsMessage) {
   focus.handleWsMessage(message);
   tasks.handleWsMessage(message);
   chat.handleWsMessage(message);
+  permission.handleWsMessage(message);
 
   if (message.type === "window:activeChanged") {
     lastWindow.value = message.payload as WindowSnapshot;
@@ -161,6 +165,14 @@ async function onCompleteFocus() {
       <div class="pet-drag-region" data-tauri-drag-region aria-hidden="true"></div>
       <PetStage :state="pet.petState.value" @click="openPanel" @contextmenu="onPetContextMenu" />
       <SpeechBubble :text="pet.feedbackText.value" :visible="pet.feedbackVisible.value" @dismiss="pet.dismissFeedback" />
+      <PermissionBubble
+        :request="permission.currentRequest.value"
+        :queue="permission.queue.value"
+        :visible="permission.visible.value"
+        @allow="permission.allow"
+        @deny="permission.deny"
+        @always="permission.always"
+      />
       <PetStatusBar :connected="serverReady" @open-panel="openPanel" />
       <p v-if="errorText" class="pet-error">{{ errorText }}</p>
     </main>

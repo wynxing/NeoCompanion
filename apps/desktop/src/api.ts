@@ -35,8 +35,11 @@ export const api = {
     request<TtsResult>("/api/tts/speak", { method: "POST", body: JSON.stringify({ text, style }) })
 };
 
+let activeWs: WebSocket | null = null;
+
 export function connectWs(onMessage: (message: WsMessage) => void) {
   const ws = new WebSocket(`${WS_BASE}/ws`);
+  activeWs = ws;
   ws.addEventListener("message", (event) => {
     onMessage(JSON.parse(event.data) as WsMessage);
   });
@@ -46,8 +49,15 @@ export function connectWs(onMessage: (message: WsMessage) => void) {
 
   return () => {
     window.clearInterval(heartbeat);
+    activeWs = null;
     ws.close();
   };
+}
+
+export function sendWsMessage(message: WsMessage) {
+  if (activeWs?.readyState === WebSocket.OPEN) {
+    activeWs.send(JSON.stringify(message));
+  }
 }
 
 export type { ChatMessage };

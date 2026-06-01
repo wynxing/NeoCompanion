@@ -56,6 +56,11 @@ export interface WsMessage<TPayload = unknown> {
     | "window:activeChanged"
     | "tts:started"
     | "tts:done"
+    | "hook:statusChanged"
+    | "permission:request"
+    | "permission:resolved"
+    | "permission:autoDismiss"
+    | "permission:response"
     | "pong";
   payload: TPayload;
   id?: string;
@@ -73,6 +78,74 @@ export interface TtsResult {
   format: "mp3" | "wav";
   provider: "mimo";
   cached: boolean;
+}
+
+// ── Hook System Types ──
+
+export type AgentState =
+  | "idle"
+  | "thinking"
+  | "working"
+  | "building"
+  | "waiting"
+  | "success"
+  | "error"
+  | "juggling"
+  | "sleeping";
+
+export interface HookEvent {
+  agentId: string;
+  type: "status";
+  state: AgentState;
+  description?: string;
+  timestamp: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PermissionRequest {
+  requestId: string;
+  agentId: string;
+  command: string;
+  severity: number;
+  description?: string;
+  timestamp: number;
+}
+
+export type PermissionDecision = "allow" | "deny" | "always";
+
+export interface PermissionResponse {
+  requestId: string;
+  decision: PermissionDecision;
+}
+
+export interface AlwaysRule {
+  agentId: string;
+  commandPrefix: string;
+  createdAt: number;
+}
+
+export type PermissionStatus = "pending" | "active" | "stale";
+
+export interface QueuedPermission extends PermissionRequest {
+  status: PermissionStatus;
+}
+
+export interface HookStatusChangedPayload {
+  agentId: string;
+  state: AgentState;
+  description?: string;
+}
+
+export interface PermissionRequestPayload extends PermissionRequest {}
+
+export interface PermissionResolvedPayload {
+  requestId: string;
+  decision: PermissionDecision;
+}
+
+export interface PermissionAutoDismissPayload {
+  requestId: string;
+  reason: "agentStateChanged" | "staleTimeout";
 }
 
 export const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
