@@ -7,5 +7,6 @@ import "./styles/pet.css";
 import "./styles/panel.css";
 import "./styles/permission-bubble.css";
 import "./styles/wallpaper.css";
+import "./styles/settings.css";
 
 createApp(App).mount("#app");

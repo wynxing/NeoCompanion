@@ -25,12 +25,14 @@ import ChatPanel from "./components/panel/ChatPanel.vue";
 import StatusBar from "./components/panel/StatusBar.vue";
 import ErrorToast from "./components/shared/ErrorToast.vue";
 import WallpaperView from "./views/WallpaperView.vue";
+import SettingsView from "./views/SettingsView.vue";
 
 type DrawerTab = "focus" | "tasks" | "chat";
 
 const viewMode = new URLSearchParams(window.location.search).get("view");
 const isPetView = viewMode === "pet";
 const isWallpaperView = viewMode === "wallpaper";
+const isSettingsView = viewMode === "settings";
 const isTauriRuntime = "__TAURI_INTERNALS__" in window;
 
 const pet = usePetState();
@@ -52,6 +54,9 @@ const contextMenu = ref<{ x: number; y: number } | null>(null);
 let disconnectWs: (() => void) | null = null;
 
 onMounted(async () => {
+  if (isSettingsView) {
+    return;
+  }
   if (isWallpaperView) {
     wallpaper.startClock();
   }
@@ -132,6 +137,13 @@ async function openPanel() {
 async function hidePanel() {
   if (!isTauriRuntime) return;
   await WebviewWindow.getCurrent().hide();
+}
+
+async function openSettings() {
+  if (!isTauriRuntime) return;
+  const settings = await WebviewWindow.getByLabel("settings");
+  await settings?.show();
+  await settings?.setFocus();
 }
 
 async function setWallpaperLayerVisible(visible: boolean) {
@@ -245,9 +257,11 @@ async function onCompleteFocus() {
 
   <WallpaperView v-else-if="isWallpaperView" :wallpaper="wallpaper" />
 
+  <SettingsView v-else-if="isSettingsView" />
+
   <main v-else class="panel-shell">
     <section class="work-panel" aria-label="工作面板">
-      <PanelHeader :pet-state="pet.petState.value" :current-task="tasks.currentTask.value" @hide="hidePanel" />
+      <PanelHeader :pet-state="pet.petState.value" :current-task="tasks.currentTask.value" @hide="hidePanel" @open-settings="openSettings" />
 
       <TabNav :active="activeTab" @change="activeTab = $event" />
 

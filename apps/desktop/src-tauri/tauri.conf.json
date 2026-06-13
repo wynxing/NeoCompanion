@@ -55,6 +55,22 @@
         "skipTaskbar": true,
         "visible": false,
         "center": false
+      },
+      {
+        "title": "NeoCompanion 设置",
+        "label": "settings",
+        "url": "/?view=settings",
+        "width": 1080,
+        "height": 760,
+        "minWidth": 880,
+        "minHeight": 640,
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "resizable": true,
+        "skipTaskbar": false,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

@@ -9,6 +9,7 @@ defineProps<{
 
 defineEmits<{
   hide: [];
+  openSettings: [];
 }>();
 </script>
 
@@ -21,6 +22,17 @@ defineEmits<{
         <h1>{{ currentTask?.title ?? "先选一件小事" }}</h1>
       </div>
     </div>
-    <button class="ghost" type="button" @click="$emit('hide')">收起</button>
+    <div class="panel-header-actions">
+      <button class="ghost" type="button" @click="$emit('openSettings')">设置</button>
+      <button class="ghost" type="button" @click="$emit('hide')">收起</button>
+    </div>
   </header>
 </template>
+
+<style scoped>
+.panel-header-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+</style>
