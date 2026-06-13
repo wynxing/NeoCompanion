@@ -41,6 +41,20 @@
         "skipTaskbar": false,
         "visible": false,
         "center": true
+      },
+      {
+        "title": "NeoCompanion Wallpaper",
+        "label": "wallpaper",
+        "url": "/?view=wallpaper",
+        "width": 1920,
+        "height": 1080,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": false,
+        "resizable": false,
+        "skipTaskbar": true,
+        "visible": false,
+        "center": false
       }
     ],
     "security": {

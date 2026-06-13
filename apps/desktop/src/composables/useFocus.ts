@@ -39,6 +39,7 @@ export function useFocus() {
   function handleWsMessage(message: WsMessage) {
     if (message.type === "focus:tick") {
       const payload = message.payload as FocusTickPayload;
+      focusSessionId.value = payload.remainingSeconds > 0 ? payload.sessionId : null;
       focusRemaining.value = payload.remainingSeconds;
       focusElapsed.value = payload.elapsedSeconds;
     }

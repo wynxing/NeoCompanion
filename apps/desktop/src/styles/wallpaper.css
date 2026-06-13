@@ -1,0 +1,126 @@
+.wallpaper-shell {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: rgba(255, 255, 255, 0.58);
+  font-family: var(--font-body);
+}
+
+.wallpaper-ambient {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(circle at 82% 48%, rgba(212, 168, 75, 0.055), transparent 28%);
+  opacity: 0;
+  transition: opacity 3s var(--ease-smooth), background 3s var(--ease-smooth);
+}
+
+.wallpaper-shell[data-state="focus"] .wallpaper-ambient {
+  opacity: 1;
+}
+
+.wallpaper-shell[data-state="warn"] .wallpaper-ambient {
+  background: radial-gradient(circle at 82% 48%, rgba(201, 123, 107, 0.045), transparent 28%);
+  opacity: 1;
+}
+
+.wallpaper-weather {
+  position: fixed;
+  top: 3vh;
+  right: 3vw;
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  color: rgba(255, 255, 255, 0.36);
+  font-family: var(--font-mono);
+  font-weight: 300;
+  letter-spacing: 0;
+  text-shadow: 0 1px 18px rgba(0, 0, 0, 0.28);
+}
+
+.wallpaper-weather-meta {
+  display: inline-flex;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.wallpaper-time {
+  font-size: 34px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.50);
+}
+
+.wallpaper-date {
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.wallpaper-focus {
+  position: fixed;
+  top: 40vh;
+  right: 3vw;
+  width: 160px;
+  height: 160px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(10, 14, 32, 0.34);
+  border: 1px solid rgba(212, 168, 75, 0.22);
+  box-shadow:
+    0 0 42px rgba(212, 168, 75, 0.08),
+    inset 0 0 22px rgba(255, 255, 255, 0.035);
+  opacity: 0.58;
+  transition: opacity var(--duration-normal) var(--ease-smooth), border-color var(--duration-normal) var(--ease-smooth);
+}
+
+.wallpaper-focus.active {
+  opacity: 0.88;
+  border-color: rgba(212, 168, 75, 0.42);
+}
+
+.wallpaper-focus-ring {
+  position: absolute;
+  inset: 4px;
+  width: 152px;
+  height: 152px;
+  transform: rotate(-90deg);
+}
+
+.wallpaper-focus-track,
+.wallpaper-focus-progress {
+  fill: none;
+  stroke-width: 3;
+}
+
+.wallpaper-focus-track {
+  stroke: rgba(255, 255, 255, 0.11);
+}
+
+.wallpaper-focus-progress {
+  stroke: rgba(212, 168, 75, 0.64);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 900ms linear;
+}
+
+.wallpaper-focus-copy {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.wallpaper-focus-copy strong {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 42px;
+  line-height: 1;
+  font-weight: 300;
+}
+
+.wallpaper-focus-copy span {
+  color: rgba(255, 255, 255, 0.34);
+  font-size: 11px;
+  line-height: 1;
+}

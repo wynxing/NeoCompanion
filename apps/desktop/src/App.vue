@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { PhysicalPosition, PhysicalSize, primaryMonitor } from "@tauri-apps/api/window";
 import { onMounted, onUnmounted, ref } from "vue";
 import type { TtsResult, WeatherSummary, WindowSnapshot, WsMessage } from "@neo-companion/shared";
 import { api, connectWs } from "./api";
@@ -8,6 +9,8 @@ import { useFocus } from "./composables/useFocus";
 import { useTasks } from "./composables/useTasks";
 import { useChat } from "./composables/useChat";
 import { usePermission } from "./composables/usePermission";
+import { useWallpaperState } from "./composables/useWallpaperState";
+import { attachWallpaper, detachWallpaper } from "./wallpaper-plugin";
 
 import PetStage from "./components/pet/PetStage.vue";
 import SpeechBubble from "./components/pet/SpeechBubble.vue";
@@ -21,11 +24,13 @@ import TaskPanel from "./components/panel/TaskPanel.vue";
 import ChatPanel from "./components/panel/ChatPanel.vue";
 import StatusBar from "./components/panel/StatusBar.vue";
 import ErrorToast from "./components/shared/ErrorToast.vue";
+import WallpaperView from "./views/WallpaperView.vue";
 
 type DrawerTab = "focus" | "tasks" | "chat";
 
 const viewMode = new URLSearchParams(window.location.search).get("view");
 const isPetView = viewMode === "pet";
+const isWallpaperView = viewMode === "wallpaper";
 const isTauriRuntime = "__TAURI_INTERNALS__" in window;
 
 const pet = usePetState();
@@ -33,30 +38,43 @@ const focus = useFocus();
 const tasks = useTasks();
 const chat = useChat();
 const permission = usePermission();
+const wallpaper = useWallpaperState();
 
 const weather = ref<WeatherSummary | null>(null);
 const lastWindow = ref<WindowSnapshot | null>(null);
 const serverReady = ref(false);
 const errorText = ref("");
 const activeTab = ref<DrawerTab>("focus");
+const wallpaperVisible = ref(true);
 
 const contextMenu = ref<{ x: number; y: number } | null>(null);
 
 let disconnectWs: (() => void) | null = null;
 
 onMounted(async () => {
+  if (isWallpaperView) {
+    wallpaper.startClock();
+  }
   await refresh();
   disconnectWs = connectWs(handleWsMessage);
+  if (isPetView) {
+    await setWallpaperLayerVisible(true);
+  }
 });
 
 onUnmounted(() => {
   disconnectWs?.();
+  if (isWallpaperView) {
+    wallpaper.stopClock();
+  }
 });
 
 async function refresh() {
   try {
     serverReady.value = (await api.health()).ok;
-    if (!isPetView) {
+    if (isWallpaperView) {
+      await wallpaper.loadWeather();
+    } else if (!isPetView) {
       await tasks.loadTasks();
       weather.value = await api.weather();
     }
@@ -72,6 +90,7 @@ function handleWsMessage(message: WsMessage) {
   tasks.handleWsMessage(message);
   chat.handleWsMessage(message);
   permission.handleWsMessage(message);
+  wallpaper.handleWsMessage(message);
 
   if (message.type === "window:activeChanged") {
     lastWindow.value = message.payload as WindowSnapshot;
@@ -113,6 +132,46 @@ async function openPanel() {
 async function hidePanel() {
   if (!isTauriRuntime) return;
   await WebviewWindow.getCurrent().hide();
+}
+
+async function setWallpaperLayerVisible(visible: boolean) {
+  if (!isTauriRuntime) return;
+
+  const wallpaperWindow = await WebviewWindow.getByLabel("wallpaper");
+  if (!wallpaperWindow) return;
+
+  try {
+    if (visible) {
+      await fitWallpaperWindowToPrimaryMonitor(wallpaperWindow);
+      await wallpaperWindow.show();
+      await attachWallpaper("wallpaper");
+      wallpaperVisible.value = true;
+      wallpaper.wallpaperVisible.value = true;
+      return;
+    }
+
+    await detachWallpaper("wallpaper");
+    await wallpaperWindow.hide();
+    wallpaperVisible.value = false;
+    wallpaper.wallpaperVisible.value = false;
+  } catch (error) {
+    wallpaperVisible.value = false;
+    wallpaper.wallpaperVisible.value = false;
+    await wallpaperWindow.hide().catch(() => {});
+    errorText.value = error instanceof Error ? error.message : "壁纸层暂时不可用";
+  }
+}
+
+async function fitWallpaperWindowToPrimaryMonitor(window: WebviewWindow) {
+  const monitor = await primaryMonitor();
+  if (!monitor) return;
+  await window.setPosition(new PhysicalPosition(monitor.position.x, monitor.position.y));
+  await window.setSize(new PhysicalSize(monitor.size.width, monitor.size.height));
+}
+
+async function toggleWallpaperLayer() {
+  closeContextMenu();
+  await setWallpaperLayerVisible(!wallpaperVisible.value);
 }
 
 function onPetContextMenu(event: MouseEvent) {
@@ -180,8 +239,11 @@ async function onCompleteFocus() {
     <div v-if="contextMenu" class="pet-context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }">
       <button type="button" :disabled="!tasks.activeTaskId.value || focus.isFocusActive.value" @click="quickStartFocus">开始专注</button>
       <button type="button" @click="focusAddTask">添加任务</button>
+      <button type="button" @click="toggleWallpaperLayer">{{ wallpaperVisible ? "关闭壁纸状态显示" : "开启壁纸状态显示" }}</button>
     </div>
   </template>
+
+  <WallpaperView v-else-if="isWallpaperView" :wallpaper="wallpaper" />
 
   <main v-else class="panel-shell">
     <section class="work-panel" aria-label="工作面板">

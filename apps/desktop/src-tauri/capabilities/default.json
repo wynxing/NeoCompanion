@@ -2,10 +2,11 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default desktop capability for NeoCompanion v1",
-  "windows": ["main", "panel"],
+  "windows": ["main", "panel", "wallpaper"],
   "permissions": [
     "core:default",
     "opener:default",
+    "wallpaper:default",
     "window-state:default"
   ]
 }

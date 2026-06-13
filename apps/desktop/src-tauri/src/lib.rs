@@ -3,9 +3,14 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{LogicalSize, Manager, Size, WindowEvent};
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_window_state::Builder::default().build());
+
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(tauri_plugin_wallpaper::init());
+
+    builder
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
