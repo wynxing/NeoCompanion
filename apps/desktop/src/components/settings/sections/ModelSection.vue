@@ -18,7 +18,7 @@ const TTS_OPTIONS = [
 
 <template>
   <div class="section-panel">
-    <div class="settings-section solid-card">
+    <div class="settings-section glass-panel">
       <div class="section-header">
         <div class="section-icon">
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
