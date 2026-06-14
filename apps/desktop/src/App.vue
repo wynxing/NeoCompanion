@@ -17,23 +17,40 @@ import SpeechBubble from "./components/pet/SpeechBubble.vue";
 import PetStatusBar from "./components/pet/PetStatusBar.vue";
 import PermissionBubble from "./components/pet/PermissionBubble.vue";
 
-import PanelHeader from "./components/panel/PanelHeader.vue";
-import TabNav from "./components/panel/TabNav.vue";
-import FocusPanel from "./components/panel/FocusPanel.vue";
-import TaskPanel from "./components/panel/TaskPanel.vue";
-import ChatPanel from "./components/panel/ChatPanel.vue";
-import StatusBar from "./components/panel/StatusBar.vue";
+import TopNav from "./components/panel/TopNav.vue";
+import CreateFocusCard from "./components/panel/cards/CreateFocusCard.vue";
+import TodayTasksCard from "./components/panel/cards/TodayTasksCard.vue";
+import WeeklyFocusCard from "./components/panel/cards/WeeklyFocusCard.vue";
+import ClawGatewayCard from "./components/panel/cards/ClawGatewayCard.vue";
+import AssistantStatusCard from "./components/panel/cards/AssistantStatusCard.vue";
+import HookNotificationsCard from "./components/panel/cards/HookNotificationsCard.vue";
+import AiChatCard from "./components/panel/cards/AiChatCard.vue";
+import DiaryCard from "./components/panel/cards/DiaryCard.vue";
+import BottomBar from "./components/panel/BottomBar.vue";
+import FloatingControls from "./components/panel/FloatingControls.vue";
+import ComponentsButton from "./components/panel/ComponentsButton.vue";
+import PageDots from "./components/panel/PageDots.vue";
 import ErrorToast from "./components/shared/ErrorToast.vue";
 import WallpaperView from "./views/WallpaperView.vue";
 import SettingsView from "./views/SettingsView.vue";
-
-type DrawerTab = "focus" | "tasks" | "chat";
 
 const viewMode = new URLSearchParams(window.location.search).get("view");
 const isPetView = viewMode === "pet";
 const isWallpaperView = viewMode === "wallpaper";
 const isSettingsView = viewMode === "settings";
 const isTauriRuntime = "__TAURI_INTERNALS__" in window;
+type PanelPage = "focus" | "tasks" | "weekly" | "claw" | "assistant" | "hooks" | "chat" | "diary";
+
+const panelPages: Array<{ id: PanelPage; label: string }> = [
+  { id: "focus", label: "专注" },
+  { id: "tasks", label: "任务" },
+  { id: "weekly", label: "本周" },
+  { id: "claw", label: "OpenClaw" },
+  { id: "assistant", label: "助手" },
+  { id: "hooks", label: "Hook" },
+  { id: "chat", label: "AI 对话" },
+  { id: "diary", label: "日记" },
+];
 
 const pet = usePetState();
 const focus = useFocus();
@@ -46,7 +63,8 @@ const weather = ref<WeatherSummary | null>(null);
 const lastWindow = ref<WindowSnapshot | null>(null);
 const serverReady = ref(false);
 const errorText = ref("");
-const activeTab = ref<DrawerTab>("focus");
+const isPanelDark = ref(false);
+const activePanelPage = ref<PanelPage>("focus");
 const wallpaperVisible = ref(true);
 
 const contextMenu = ref<{ x: number; y: number } | null>(null);
@@ -134,11 +152,6 @@ async function openPanel() {
   await panel?.setFocus();
 }
 
-async function hidePanel() {
-  if (!isTauriRuntime) return;
-  await WebviewWindow.getCurrent().hide();
-}
-
 async function openSettings() {
   if (!isTauriRuntime) return;
   const settings = await WebviewWindow.getByLabel("settings");
@@ -196,10 +209,8 @@ function closeContextMenu() {
 
 async function quickStartFocus() {
   closeContextMenu();
-  if (tasks.activeTaskId.value) {
-    await focus.startFocus(tasks.activeTaskId.value);
-    pet.setState("focus");
-  }
+  await focus.startFocus(tasks.activeTaskId.value);
+  pet.setState("focus");
 }
 
 function focusAddTask() {
@@ -214,19 +225,28 @@ function onTaskToggle(task: typeof tasks.tasks.value[0]) {
   }
 }
 
-async function onSendChat() {
-  chat.sendChat();
-  pet.setState("thinking");
+function togglePanelTheme() {
+  isPanelDark.value = !isPanelDark.value;
 }
 
-async function onStartFocus() {
+function setActivePanelPage(pageId: string) {
+  if (panelPages.some((page) => page.id === pageId)) {
+    activePanelPage.value = pageId as PanelPage;
+  }
+}
+
+async function onStartFocusFromCard(duration?: number) {
+  if (duration) {
+    focus.focusMinutes.value = duration;
+  }
   await focus.startFocus(tasks.activeTaskId.value);
   pet.setState("focus");
 }
 
-async function onCompleteFocus() {
-  await focus.completeFocus();
-  pet.setState("happy");
+function handleSendMessage(text: string) {
+  chat.chatInput.value = text;
+  chat.sendChat();
+  pet.setState("thinking");
 }
 </script>
 
@@ -249,7 +269,7 @@ async function onCompleteFocus() {
     </main>
 
     <div v-if="contextMenu" class="pet-context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }">
-      <button type="button" :disabled="!tasks.activeTaskId.value || focus.isFocusActive.value" @click="quickStartFocus">开始专注</button>
+      <button type="button" :disabled="focus.isFocusActive.value" @click="quickStartFocus">开始专注</button>
       <button type="button" @click="focusAddTask">添加任务</button>
       <button type="button" @click="toggleWallpaperLayer">{{ wallpaperVisible ? "关闭壁纸状态显示" : "开启壁纸状态显示" }}</button>
     </div>
@@ -259,48 +279,77 @@ async function onCompleteFocus() {
 
   <SettingsView v-else-if="isSettingsView" />
 
-  <main v-else class="panel-shell">
-    <section class="work-panel" aria-label="工作面板">
-      <PanelHeader :pet-state="pet.petState.value" :current-task="tasks.currentTask.value" @hide="hidePanel" @open-settings="openSettings" />
+  <main v-else class="panel-shell" :class="{ 'dark-mode': isPanelDark }">
+    <!-- Noise texture filter -->
+    <svg width="0" height="0" style="position: absolute">
+      <filter id="panel-noise-filter">
+        <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch" />
+        <feComposite operator="in" in2="SourceGraphic" />
+      </filter>
+    </svg>
 
-      <TabNav :active="activeTab" @change="activeTab = $event" />
+    <!-- Top navigation -->
+    <TopNav
+      :pet-state="pet.petState.value"
+      :is-dark="isPanelDark"
+      @toggle-theme="togglePanelTheme"
+      @open-settings="openSettings"
+    />
 
-      <FocusPanel
-        v-show="activeTab === 'focus'"
-        :timer-text="focus.timerText.value"
-        :focus-progress="focus.focusProgress.value"
-        :focus-minutes="focus.focusMinutes.value"
-        :is-focus-active="focus.isFocusActive.value"
-        :current-task="tasks.currentTask.value"
-        @start-focus="onStartFocus"
-        @complete-focus="onCompleteFocus"
-        @update:focus-minutes="focus.focusMinutes.value = $event"
-      />
+    <!-- Focused page card -->
+    <section class="panel-page-stage" aria-live="polite">
+      <CreateFocusCard v-if="activePanelPage === 'focus'" @start-focus="onStartFocusFromCard" />
 
-      <TaskPanel
-        v-show="activeTab === 'tasks'"
+      <TodayTasksCard
+        v-else-if="activePanelPage === 'tasks'"
         :tasks="tasks.tasks.value"
         :completed-count="tasks.completedTasks.value.length"
         :total-count="tasks.tasks.value.length"
+        :focus-duration="focus.timerText.value"
         :new-task-title="tasks.newTaskTitle.value"
         :active-task-id="tasks.activeTaskId.value"
-        @update:new-task-title="tasks.newTaskTitle.value = $event"
         @add-task="tasks.addTask"
         @toggle-task="onTaskToggle"
+        @update:new-task-title="tasks.newTaskTitle.value = $event"
         @update:active-task-id="tasks.activeTaskId.value = $event"
       />
 
-      <ChatPanel
-        v-show="activeTab === 'chat'"
-        :chat-input="chat.chatInput.value"
+      <WeeklyFocusCard v-else-if="activePanelPage === 'weekly'" @start-focus="onStartFocusFromCard" />
+
+      <ClawGatewayCard v-else-if="activePanelPage === 'claw'" />
+
+      <AssistantStatusCard v-else-if="activePanelPage === 'assistant'" :pet-state="pet.petState.value" />
+
+      <HookNotificationsCard v-else-if="activePanelPage === 'hooks'" />
+
+      <AiChatCard
+        v-else-if="activePanelPage === 'chat'"
         :chat-answer="chat.chatAnswer.value"
         :chat-loading="chat.chatLoading.value"
-        @update:chat-input="chat.chatInput.value = $event"
-        @send-chat="onSendChat"
+        @send-message="handleSendMessage"
       />
 
-      <StatusBar :weather="weather" :last-window="lastWindow" />
+      <DiaryCard v-else />
     </section>
+    <div class="panel-lower">
+      <ComponentsButton />
+      <div class="panel-status-stack">
+        <PageDots
+          :pages="panelPages"
+          :active="activePanelPage"
+          aria-label="主面板功能导航"
+          @update:active="setActivePanelPage"
+        />
+        <BottomBar
+          :weather="weather"
+          :last-window="lastWindow"
+          :is-focus-active="focus.isFocusActive.value"
+          focus-start-time="18:42"
+          :focus-duration="`${focus.focusMinutes.value} min`"
+        />
+      </div>
+      <FloatingControls />
+    </div>
 
     <ErrorToast :text="errorText" />
   </main>
