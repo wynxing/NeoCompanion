@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "windows-wallpaper",
+  "description": "Wallpaper plugin — Windows only",
+  "platforms": ["windows"],
+  "windows": ["wallpaper"],
+  "permissions": [
+    "wallpaper:default"
+  ]
+}
