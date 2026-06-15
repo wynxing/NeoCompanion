@@ -3,22 +3,26 @@ const emit = defineEmits<{
   startFocus: [];
 }>();
 
-// Static MVP data — bars for each day
+// Static MVP data — paired bars for each weekday
 const blueBars = [35, 45, 30, 55, 40, 65, 50];
 const greyBars = [45, 70, 60, 75, 55, 65, 50];
-const bars = [
-  ...blueBars.map((height) => ({ height, color: "#3b82f6" })),
-  ...greyBars.map((height) => ({ height, color: "#d8dee8" })),
-];
 
 const weekDays = ["一", "二", "三", "四", "五", "六", "日"];
+const barData = weekDays.map((day, i) => ({
+  day,
+  blue: blueBars[i],
+  grey: greyBars[i],
+}));
 </script>
 
 <template>
   <div class="card card-solid">
     <div class="card-title">本周专注</div>
     <div class="bars">
-      <span v-for="(bar, index) in bars" :key="index" :style="{ height: bar.height + '%', background: bar.color }"></span>
+      <template v-for="(day, index) in barData" :key="index">
+        <span :style="{ height: day.blue + '%', background: '#3b82f6' }"></span>
+        <span :style="{ height: day.grey + '%', background: '#d8dee8' }"></span>
+      </template>
     </div>
     <div
       class="markers"
@@ -35,6 +39,7 @@ const weekDays = ["一", "二", "三", "四", "五", "六", "日"];
     </div>
     <div class="card-foot" style="padding-top: 14px; align-items: center">
       <div>
+        <!-- TODO: 接入真实数据 -->
         <div style="font-size: 1.6rem; font-weight: 500; letter-spacing: -0.02em">
           12h 40<span style="font-size: 0.95rem; opacity: 0.55">min</span>
         </div>

@@ -6,8 +6,6 @@ defineProps<{
 }>();
 
 // Static MVP — mood quote and state pills
-const quote = "「你正在做<em>重要的事</em>，不要分心，我会替你挡掉那些 hook 提醒。」";
-
 const pills = [
   { label: "专注", on: true },
   { label: "TTS 关", on: false },
@@ -31,7 +29,7 @@ const pills = [
 
     <div class="nc-mood">
       <div class="orb"></div>
-      <div class="quote" v-html="quote"></div>
+      <div class="quote">「你正在做<em>重要的事</em>，不要分心，我会替你挡掉那些 hook 提醒。」</div>
     </div>
 
     <div class="nc-state-row">

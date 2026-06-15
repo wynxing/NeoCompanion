@@ -1,5 +1,6 @@
 <script setup lang="ts">
 // Static MVP — hardcoded diary content
+// TODO: 接入真实数据
 const chips = [
   { label: "助手日记预览", variant: "blue" },
   { label: "本周 7 篇", variant: "black" },

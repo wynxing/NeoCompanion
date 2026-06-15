@@ -33,6 +33,7 @@ import PageDots from "./components/panel/PageDots.vue";
 import ErrorToast from "./components/shared/ErrorToast.vue";
 import WallpaperView from "./views/WallpaperView.vue";
 import SettingsView from "./views/SettingsView.vue";
+import { useSettings } from "./composables/useSettings";
 
 const viewMode = new URLSearchParams(window.location.search).get("view");
 const isPetView = viewMode === "pet";
@@ -58,6 +59,7 @@ const tasks = useTasks();
 const chat = useChat();
 const permission = usePermission();
 const wallpaper = useWallpaperState();
+const settings = useSettings();
 
 const weather = ref<WeatherSummary | null>(null);
 const lastWindow = ref<WindowSnapshot | null>(null);
@@ -66,6 +68,7 @@ const errorText = ref("");
 const isPanelDark = ref(false);
 const activePanelPage = ref<PanelPage>("focus");
 const wallpaperVisible = ref(true);
+const focusStartTime = ref("");
 
 const contextMenu = ref<{ x: number; y: number } | null>(null);
 
@@ -209,6 +212,8 @@ function closeContextMenu() {
 
 async function quickStartFocus() {
   closeContextMenu();
+  if (!tasks.activeTaskId.value) return;
+  focusStartTime.value = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   await focus.startFocus(tasks.activeTaskId.value);
   pet.setState("focus");
 }
@@ -236,9 +241,11 @@ function setActivePanelPage(pageId: string) {
 }
 
 async function onStartFocusFromCard(duration?: number) {
+  if (!tasks.activeTaskId.value) return;
   if (duration) {
     focus.focusMinutes.value = duration;
   }
+  focusStartTime.value = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   await focus.startFocus(tasks.activeTaskId.value);
   pet.setState("focus");
 }
@@ -247,6 +254,14 @@ function handleSendMessage(text: string) {
   chat.chatInput.value = text;
   chat.sendChat();
   pet.setState("thinking");
+}
+
+function toggleTts() {
+  settings.ttsEnabled.value = !settings.ttsEnabled.value;
+}
+
+function toggleImmersive() {
+  settings.immersiveMode.value = !settings.immersiveMode.value;
 }
 </script>
 
@@ -344,11 +359,14 @@ function handleSendMessage(text: string) {
           :weather="weather"
           :last-window="lastWindow"
           :is-focus-active="focus.isFocusActive.value"
-          focus-start-time="18:42"
+          :focus-start-time="focusStartTime"
           :focus-duration="`${focus.focusMinutes.value} min`"
         />
       </div>
-      <FloatingControls />
+      <FloatingControls
+        @toggle-tts="toggleTts"
+        @toggle-immersive="toggleImmersive"
+      />
     </div>
 
     <ErrorToast :text="errorText" />

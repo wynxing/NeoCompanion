@@ -57,15 +57,7 @@ function handleSend() {
           v-model="inputText"
           type="text"
           placeholder="问点什么…"
-          style="
-            flex: 1;
-            border: none;
-            background: transparent;
-            outline: none;
-            font: inherit;
-            font-size: 0.78rem;
-            color: inherit;
-          "
+          class="chat-input-native"
           @keydown.enter.prevent="handleSend"
         />
         <span class="send" @click="handleSend">

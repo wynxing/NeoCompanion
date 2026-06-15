@@ -52,7 +52,7 @@ export function useSettings() {
 
   // —— 模型配置
   const selectedModel = ref<ModelKey>("deepseek");
-  const apiKeyMasked = ref("sk-••••••••3f7a");
+  const apiKeyMasked = ref("");
   const customApiEndpoint = ref("");
   const ttsEngine = ref<TtsEngine>("edge");
 

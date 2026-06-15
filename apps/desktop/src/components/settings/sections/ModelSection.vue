@@ -50,6 +50,7 @@ const TTS_OPTIONS = [
         </SettingRow>
 
         <SettingRow label="自定义 API 端点" hint='仅在选择"自定义端点"模型时生效'>
+          <!-- TODO: Phase 2 — 在 Rust 侧校验 URL scheme 为 https 且禁止 loopback/私有地址，防止 SSRF -->
           <template #action>
             <TextField
               v-model="state.customApiEndpoint.value"

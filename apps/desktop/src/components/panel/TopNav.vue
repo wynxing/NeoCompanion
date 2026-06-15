@@ -2,17 +2,15 @@
 import type { CompanionState } from "@neo-companion/shared";
 
 defineProps<{
-  petState: CompanionState;
+  petState: CompanionState; // TODO: Phase 2 — use for dynamic avatar state
   isDark: boolean;
 }>();
 
 const emit = defineEmits<{
   toggleTheme: [];
   openSettings: [];
-  search: [];
-}>();
-
-</script>
+  search: []; // TODO: Phase 2 — global search feature
+}>();</script>
 
 <template>
   <nav class="panel-topnav" data-tauri-drag-region>
