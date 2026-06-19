@@ -1,7 +1,7 @@
 # NeoCompanion
 
 [![Status](https://img.shields.io/badge/Status-Draft--Approved--v3.3-blue.svg)](#)
-[![Version](https://img.shields.io/badge/Version-3.3-green.svg)](#)
+[![Version](https://img.shields.io/badge/Version-0.1.0-green.svg)](#)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](#)
 
 > 一个融入桌面的 AI 助手——状态融入壁纸，轻交互近在手边，编辑留给面板。
@@ -145,10 +145,10 @@ NeoCompanion 的能力由浅入深分为四层：
 | 桌面运行时 | **Tauri v2** (Rust) |
 | 前端 UI | **Vue 3** + Vite + Pinia + TanStack Query |
 | 本地服务 | **Fastify** (TypeScript Sidecar) |
-| 数据库 | **SQLite** (Drizzle ORM + FTS5) + **sqlite-vec** |
+| 数据库 | **SQLite** (Drizzle ORM) |
 | AI | 聊天模型适配器 + OpenAI-compatible Embedding Adapter |
 
-架构核心：Tauri (Rust) 提供系统级能力 → Fastify (TypeScript) 处理业务逻辑、索引与 AI 调度 → Vue 提供 UI → SQLite 统一存储业务数据、全文索引和向量索引。
+架构核心：Tauri (Rust) 提供系统级能力 → Fastify (TypeScript) 处理业务逻辑与 AI 调度 → Vue 提供 UI → SQLite 统一存储业务数据。v2 计划引入 FTS5 全文索引与 sqlite-vec 向量索引，当前版本尚未实现。
 
 详见 [**系统架构设计**](docs/ARCHITECTURE.md)。
 
@@ -163,9 +163,17 @@ NeoCompanion 的能力由浅入深分为四层：
 | [**系统架构设计**](docs/ARCHITECTURE.md) | Tauri + Fastify + Vue 多端通信、数据流、Hook 审批架构 |
 | [**壁纸层状态显示**](docs/WALLPAPER_STATUS_LAYER.md) | WorkerW 嵌入方案、壁纸组件设计、三层职责划分 |
 | [**助手人设配置**](docs/SOUL_CONFIG.md) | soul.md 文件规格、人设可配置系统、热加载机制 |
+| [**开发环境搭建**](docs/DEVELOPMENT.md) | 本地开发环境、依赖、运行命令 |
+| [**Sidecar API 参考**](docs/API.md) | REST API 与 WebSocket 消息说明 |
+| [**TTS 配置指南**](docs/TTS_SETUP.md) | MiMo TTS 接入与故障排查 |
+| [**测试说明**](docs/TESTING.md) | 测试策略与命令 |
+| [**术语表**](docs/GLOSSARY.md) | 项目术语与弃用词汇 |
+| [**已知 TODO**](docs/TODO_INVENTORY.md) | 文档与代码不一致的待办清单 |
+| [**贡献指南**](CONTRIBUTING.md) | 如何参与项目 |
+| [**更新日志**](CHANGELOG.md) | 版本发布记录 |
 
 ---
 
 ## License
 
-MIT
+[MIT](LICENSE)

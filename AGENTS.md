@@ -1,3 +1,5 @@
+> **Note:** The content below has been migrated to the project root as `CLAUDE.md` so that Claude Code auto-loads it. Please read `CLAUDE.md` first; this file is kept for backward references.
+
 # CLAUDE.md
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.

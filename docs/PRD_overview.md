@@ -9,9 +9,9 @@
 - **Last Updated**: 2026-06-18
 - **Audience**: Product, Design, Engineering
 - **Related Docs**:
-  - [`README.md`](file:///d:/character_design/NeoCompanion/README.md)
-  - [`docs/具体能力构思.md`](file:///d:/character_design/NeoCompanion/docs/具体能力构思.md)
-  - [`docs/WALLPAPER_STATUS_LAYER.md`](file:///d:/character_design/NeoCompanion/docs/WALLPAPER_STATUS_LAYER.md)
+  - [`README.md`](../README.md)
+  - [`docs/具体能力构思.md`](./具体能力构思.md)
+  - [`docs/WALLPAPER_STATUS_LAYER.md`](./WALLPAPER_STATUS_LAYER.md)
 
 ---
 
@@ -137,6 +137,8 @@ NeoCompanion 的长期能力分为四层：
 ---
 
 ## 6. Roadmap Framework
+
+> **Scope note**: v1 是当前正在实现的最小闭环；v2 与 v3 是后续规划方向，尚未全部交付。具体实现状态请对照 `docs/ARCHITECTURE.md` 中的 `(Planned)` / `(Partial)` 标注。
 
 ### 6.1 v1: 助手最小闭环 (Warm Companion Base)
 - **目标**：实现桌面常驻悬浮助手的基本 2D 精灵图形态、语音 TTS 播报。

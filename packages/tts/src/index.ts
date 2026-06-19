@@ -43,7 +43,7 @@ export async function speakWithMimo(text: string, styleInstruction?: string, opt
 
   const endpoint = options.baseUrl ?? process.env.MIMO_TTS_BASE_URL;
   if (!endpoint) {
-    throw new Error("Missing MIMO_TTS_BASE_URL. Set it from the Xiaomi MiMo TTS console documentation before live TTS calls.");
+    throw new Error("Missing MIMO_TTS_BASE_URL. See docs/TTS_SETUP.md.");
   }
 
   const request = buildMimoTtsRequest(text, styleInstruction, options);
