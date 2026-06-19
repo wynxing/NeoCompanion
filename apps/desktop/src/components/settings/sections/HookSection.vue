@@ -48,7 +48,7 @@ defineProps<{
         </template>
       </SettingRow>
 
-      <SettingRow label="自动扫描注入" hint="启动时自动检测 OpenClaw 等工具配置并注入 Hook 端点">
+      <SettingRow label="自动扫描注入" hint="启动时自动检测外部 Agent 工具配置并注入 Hook 端点">
         <template #action>
           <ToggleSwitch v-model="state.autoScanInject.value" />
         </template>
@@ -80,11 +80,6 @@ defineProps<{
         </template>
       </SettingRow>
 
-      <SettingRow label="OpenClaw 集成" hint="对接 OpenClaw 的执行进度与状态截图">
-        <template #action>
-          <HookStatusDot :active="state.openClawDetected.value" />
-        </template>
-      </SettingRow>
     </div>
   </div>
 </template>

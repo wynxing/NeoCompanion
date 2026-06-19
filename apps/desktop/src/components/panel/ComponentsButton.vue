@@ -3,6 +3,6 @@
     <span style="background: var(--blue); color: #fff">任</span>
     <span style="background: rgba(255, 255, 255, 0.85); color: #1a1a1a">钟</span>
     <span style="background: rgba(255, 255, 255, 0.65); color: #1a1a1a">AI</span>
-    <span style="background: var(--alert); color: #fff">钩</span>
+    <span style="background: var(--alert); color: #fff">库</span>
   </div>
 </template>

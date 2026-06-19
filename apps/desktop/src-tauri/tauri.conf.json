@@ -71,6 +71,22 @@
         "skipTaskbar": false,
         "visible": false,
         "center": true
+      },
+      {
+        "title": "NeoCompanion 知识工作空间",
+        "label": "knowledge",
+        "url": "/?view=knowledge",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 1024,
+        "minHeight": 680,
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "resizable": true,
+        "skipTaskbar": false,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

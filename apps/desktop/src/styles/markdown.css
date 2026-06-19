@@ -1,0 +1,268 @@
+/**
+ * 编辑器/渲染共享的 markdown 元素样式。
+ *
+ * 这些 class 由 markdownStyles.ts 派发，编辑器（Tiptap HTMLAttributes）与
+ * NotePreview 的 readonly 渲染都会命中同一份规则——做到所见即所得。
+ *
+ * 命名空间 `.nc-md-*`，避免与 panel/settings 现有 .preview-body 子规则混淆。
+ * 颜色全部走 `var(--kw-*)` token，与 knowledge 视觉协调。
+ */
+
+/* ---------- 容器基线 ---------- */
+
+.nc-md-root {
+  font-size: 0.92rem;
+  line-height: 1.7;
+  color: var(--kw-text);
+  word-wrap: break-word;
+}
+
+/* Tiptap 渲染出的 ProseMirror 根节点同样落在容器内 */
+.nc-md-root .ProseMirror {
+  outline: none;
+  min-height: 1.5em;
+}
+
+.nc-md-root .ProseMirror:focus {
+  outline: none;
+}
+
+/* ---------- 标题 ---------- */
+
+.nc-md-h1,
+.nc-md-h2,
+.nc-md-h3,
+.nc-md-h4,
+.nc-md-h5,
+.nc-md-h6 {
+  margin: 18px 0 8px;
+  line-height: 1.3;
+  color: var(--kw-text);
+}
+
+.nc-md-h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  border-bottom: 1px solid var(--kw-border);
+  padding-bottom: 6px;
+}
+
+.nc-md-h2 {
+  font-size: 1.22rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--kw-border);
+  padding-bottom: 4px;
+}
+
+.nc-md-h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.nc-md-h4 {
+  font-size: 0.98rem;
+  font-weight: 600;
+}
+
+.nc-md-h5 {
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.nc-md-h6 {
+  font-size: 0.92rem;
+  font-weight: 500;
+  color: var(--kw-text-muted);
+}
+
+/* ---------- 段落 / 引用 / 分隔 ---------- */
+
+.nc-md-paragraph {
+  margin: 0 0 10px;
+  line-height: 1.7;
+}
+
+.nc-md-blockquote {
+  margin: 0 0 10px;
+  padding: 4px 12px;
+  border-left: 3px solid var(--kw-accent);
+  background: var(--kw-accent-soft);
+  color: var(--kw-text-muted);
+  font-style: italic;
+}
+
+.nc-md-blockquote .nc-md-paragraph {
+  margin: 0;
+}
+
+.nc-md-hr {
+  margin: 16px 0;
+  border: 0;
+  height: 0;
+  border-bottom: 1px solid var(--kw-border);
+}
+
+/* ---------- 列表 ---------- */
+
+.nc-md-bullet-list,
+.nc-md-ordered-list {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+
+.nc-md-bullet-list {
+  list-style: disc;
+}
+
+.nc-md-ordered-list {
+  list-style: decimal;
+}
+
+.nc-md-list-item {
+  margin: 4px 0;
+  line-height: 1.7;
+}
+
+.nc-md-list-item > p {
+  margin: 0;
+}
+
+/* 任务列表 —— Tiptap TaskList/TaskItem 渲染为 ul/li，内部含 label + checkbox */
+.nc-md-task-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding-left: 4px;
+}
+
+.nc-md-task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0;
+  line-height: 1.7;
+}
+
+.nc-md-task-item > label {
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.nc-md-task-item input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--kw-accent);
+}
+
+.nc-md-task-item > div {
+  flex: 1;
+}
+
+.nc-md-task-item > div > p {
+  margin: 0;
+}
+
+.nc-md-task-item[data-checked="true"] > div {
+  color: var(--kw-text-muted);
+  text-decoration: line-through;
+}
+
+/* ---------- 行内 ---------- */
+
+.nc-md-strong {
+  font-weight: 600;
+  color: var(--kw-text);
+}
+
+.nc-md-emphasis {
+  font-style: italic;
+}
+
+.nc-md-link {
+  color: var(--kw-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(59, 130, 246, 0.5);
+  transition: text-decoration-color 0.15s ease;
+}
+
+.nc-md-link:hover {
+  text-decoration-color: var(--kw-accent);
+}
+
+.nc-md-inline-code {
+  background: var(--kw-tag-bg);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", monospace;
+  font-size: 0.85em;
+  color: var(--kw-text);
+}
+
+/* ---------- 代码块 ---------- */
+
+.nc-md-code-block {
+  background: var(--kw-surface-alt);
+  border: 1px solid var(--kw-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 0 0 10px;
+  overflow-x: auto;
+  font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", monospace;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.nc-md-code-block code {
+  background: transparent;
+  padding: 0;
+  border: 0;
+  font-size: inherit;
+  color: var(--kw-text);
+  white-space: pre;
+}
+
+/* ---------- 标签 pill（#tag） ---------- */
+
+.nc-md-tag-pill {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: baseline;
+  padding: 1px 8px;
+  font-size: 0.86em;
+  line-height: 1.4;
+  font-weight: 400;
+  border-radius: 999px;
+  border: 1px solid var(--kw-accent);
+  color: var(--kw-accent);
+  background: var(--kw-accent-soft);
+  font-family: inherit;
+}
+
+/* ---------- PreservedBlock（表格 / $$math$$ / 原生 HTML） ---------- */
+
+.nc-md-preserved-block,
+.ProseMirror pre[data-preserved-block] {
+  background: var(--kw-surface-alt);
+  border: 1px dashed var(--kw-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 10px;
+  font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", monospace;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--kw-text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.nc-md-preserved-inline,
+.ProseMirror span[data-preserved-inline] {
+  font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", monospace;
+  font-size: 0.85em;
+  color: var(--kw-text-muted);
+  background: var(--kw-tag-bg);
+  padding: 1px 4px;
+  border-radius: 4px;
+}

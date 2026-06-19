@@ -1,7 +1,7 @@
 # NeoCompanion
 
-[![Status](https://img.shields.io/badge/Status-Draft--Approved--v3.2-blue.svg)](#)
-[![Version](https://img.shields.io/badge/Version-3.2-green.svg)](#)
+[![Status](https://img.shields.io/badge/Status-Draft--Approved--v3.3-blue.svg)](#)
+[![Version](https://img.shields.io/badge/Version-3.3-green.svg)](#)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](#)
 
 > 一个融入桌面的 AI 助手——状态融入壁纸，轻交互近在手边，编辑留给面板。
@@ -92,7 +92,7 @@ echo '{"state":"success","description":"Build pass"}' > ~/.NeoCompanion/hooks/bu
 
 ### 🔒 本地优先，隐私可控
 
-所有数据存储在本地，不上传云端。窗口检测可开关，应用黑名单可配置，发送给 AI 的内容可审查。不需要注册账户。
+业务数据和索引默认存储在本地，不需要注册账户。窗口检测可开关，应用黑名单可配置；只有用户启用云端 Chat 或 Embedding Provider 后，对应的问答上下文或待向量化文本才会发送给该服务，并在设置中明确展示边界。
 
 ---
 
@@ -106,7 +106,7 @@ NeoCompanion 的能力由浅入深分为四层：
 |-------------------------------------------------------|
 |  2. Routine Layer   (番茄钟 / 待办清单 / 天气 / 助手日志)  |
 |-------------------------------------------------------|
-|  3. Gateway Layer   (内置原子能力 / OpenClaw / LLM 对话)   |
+|  3. Knowledge & AI  (项目 / 笔记 / 看板 / 混合检索 / AI)  |
 |-------------------------------------------------------|
 |  4. Hook & System   (安全 Hook API / 本地状态感知与记忆)    |
 +-------------------------------------------------------+
@@ -116,7 +116,7 @@ NeoCompanion 的能力由浅入深分为四层：
 
 **日常琐碎陪伴层**——陪伴式番茄钟、助手待办清单、天气碎碎念、助手工作日志。
 
-**智能网关与对话层**——内置基础 Agent（文件读写、网页搜索、剪贴板获取）；复杂跨软件任务委托给 [OpenClaw](https://github.com/openclaw/openclaw)；日常提问直连大模型 API。
+**知识与 AI 层**——在单一本地工作空间中组织项目、Markdown 笔记、任务与看板；通过全文检索和向量检索为 AI 对话提供可核验的本地上下文。
 
 **Hook 与系统层**——安全本地多通道 Hook（HTTP / UDS / File Watcher / MQTT）；浮动权限审批气泡；本地隐私感知引擎；本地长期记忆。
 
@@ -128,13 +128,13 @@ NeoCompanion 的能力由浅入深分为四层：
 
 桌面常驻悬浮助手的基本 2D 精灵图形态、语音 TTS 播报。助手番茄钟、待办、天气碎碎念。壁纸层 MVP（天气时间 + 专注主控盘 + 热区轻交互）。Hook 角标通知。
 
-### 🔌 v2：开放 Hook 极客生态
+### 📚 v2：本地知识工作空间
 
-安全本地 Hook API（HTTP + File Watcher 多通道推送）。零端口 UDS / Named Pipe 本地挂载。浮动权限审批气泡 + 全局热键（`Ctrl+Shift+Y` / `Ctrl+Shift+N`）。AI 对话面板完善（一键拾取剪贴板报错）。OpenClaw 配置自动打桩。
+项目、Markdown 笔记、统一任务与看板形成可用闭环。SQLite FTS5 提供本地全文搜索，`sqlite-vec` 提供可选向量检索；AI 回答展示可点击来源。Embedding 未配置或失败时自动降级为全文搜索。通用 Hook API 与权限审批能力继续独立演进。
 
-### 🧠 v3：完整智能网关与分布式远程挂载
+### 🧠 v3：知识增强的长期陪伴
 
-分布式远程宿主挂载（将 LanceDB、SQLite 托管至 NAS / 云服务器）。深度打通 OpenClaw 跨软件执行网关。助手性格记忆演进，形成有长期偏好的情感交互。
+增加本地文件夹同步、多格式导入和本地 embedding 模型；将用户主动维护的知识与助手长期记忆分开治理，并在明确授权下形成有来源、可追溯的个性化交互。
 
 ---
 
@@ -145,10 +145,10 @@ NeoCompanion 的能力由浅入深分为四层：
 | 桌面运行时 | **Tauri v2** (Rust) |
 | 前端 UI | **Vue 3** + Vite + Pinia + TanStack Query |
 | 本地服务 | **Fastify** (TypeScript Sidecar) |
-| 数据库 | **SQLite** (Drizzle ORM) + 向量检索 (hnswlib-wasm / LanceDB) |
-| AI | 多模型适配器 (DeepSeek / OpenAI / Claude)，用户可自定义 |
+| 数据库 | **SQLite** (Drizzle ORM + FTS5) + **sqlite-vec** |
+| AI | 聊天模型适配器 + OpenAI-compatible Embedding Adapter |
 
-架构核心：Tauri (Rust) 提供系统级能力 → Fastify (TypeScript) 处理业务逻辑和 AI 调度 → Vue 提供 UI → SQLite + 向量检索本地存储全部数据。
+架构核心：Tauri (Rust) 提供系统级能力 → Fastify (TypeScript) 处理业务逻辑、索引与 AI 调度 → Vue 提供 UI → SQLite 统一存储业务数据、全文索引和向量索引。
 
 详见 [**系统架构设计**](docs/ARCHITECTURE.md)。
 
