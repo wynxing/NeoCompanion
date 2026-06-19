@@ -1,6 +1,8 @@
 # GitHub Actions CI/CD Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status: IMPLEMENTED** — The workflows described in this document have been deployed to `.github/workflows/` and verified. This document is kept as a historical implementation record.
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Configure GitHub Actions for NeoCompanion — PR quality gate, Tauri cross-platform build verification, and tag-triggered release publishing.
 
@@ -31,7 +33,7 @@ No existing files are modified except `tauri.conf.json` (bundle config). All thr
 **Files:**
 - Create: `.github/workflows/ci-check.yml`
 
-- [ ] **Step 1: Write ci-check.yml**
+- [x] **Step 1: Write ci-check.yml**
 
 ```yaml
 name: CI Check
@@ -62,7 +64,7 @@ jobs:
       - run: pnpm test
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add .github/workflows/ci-check.yml
@@ -76,7 +78,7 @@ git commit -m "ci: add PR quality gate workflow (typecheck + test)"
 **Files:**
 - Create: `.github/workflows/ci-build.yml`
 
-- [ ] **Step 1: Write ci-build.yml**
+- [x] **Step 1: Write ci-build.yml**
 
 ```yaml
 name: CI Build
@@ -145,7 +147,7 @@ jobs:
           retention-days: 7
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add .github/workflows/ci-build.yml
@@ -159,7 +161,7 @@ git commit -m "ci: add PR build verification workflow (Tauri, 3 platforms)"
 **Files:**
 - Create: `.github/workflows/release.yml`
 
-- [ ] **Step 1: Write release.yml**
+- [x] **Step 1: Write release.yml**
 
 ```yaml
 name: Release
@@ -227,7 +229,7 @@ jobs:
           args: ${{ matrix.args }}
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add .github/workflows/release.yml
@@ -243,7 +245,7 @@ git commit -m "ci: add tag-triggered release workflow (Tauri, 3 platforms)"
 
 The current `bundle.active` is `false` and `bundle.icon` is `[]`. Tauri's `tauri-action` requires bundling to be enabled and icons present for build to succeed.
 
-- [ ] **Step 1: Update tauri.conf.json bundle section**
+- [x] **Step 1: Update tauri.conf.json bundle section**
 
 Change the `bundle` section from:
 ```json
@@ -269,7 +271,7 @@ To:
 }
 ```
 
-- [ ] **Step 2: Verify icon files exist**
+- [x] **Step 2: Verify icon files exist**
 
 Run: `ls apps/desktop/src-tauri/icons/`
 
@@ -281,7 +283,7 @@ pnpm exec tauri icon
 
 This takes a source image and generates all required sizes. If no source image is available, create a placeholder 1024x1024 PNG first, then run the command.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add apps/desktop/src-tauri/tauri.conf.json apps/desktop/src-tauri/icons/
@@ -292,7 +294,7 @@ git commit -m "feat: enable Tauri bundling and add app icons"
 
 ### Task 5: Verify and push
 
-- [ ] **Step 1: Verify all workflow files are valid YAML**
+- [x] **Step 1: Verify all workflow files are valid YAML**
 
 Visually inspect each file for indentation and syntax. Key things to check:
 - `on:` triggers are correct (PR → main, tag v*)
@@ -300,23 +302,23 @@ Visually inspect each file for indentation and syntax. Key things to check:
 - All action versions are pinned (`@v4`, `@v2`, `@v0`)
 - `GITHUB_TOKEN` is referenced correctly in release.yml
 
-- [ ] **Step 2: Push all commits**
+- [x] **Step 2: Push all commits**
 
 ```bash
 git push origin main
 ```
 
-- [ ] **Step 3: Verify in GitHub**
+- [x] **Step 3: Verify in GitHub**
 
 Open the repository on GitHub → Actions tab. Confirm all three workflows appear in the sidebar. They will not run until a PR is opened or a tag is pushed.
 
-- [ ] **Step 4: Create a test PR to verify ci-check and ci-build**
+- [x] **Step 4: Create a test PR to verify ci-check and ci-build**
 
 Create a branch, make a trivial change (e.g. add a comment to README), open a PR against main. Both `CI Check` and `CI Build` workflows should trigger. Verify:
 - `ci-check` passes typecheck + test
 - `ci-build` passes on at least one platform (Ubuntu is fastest)
 
-- [ ] **Step 5: (Optional) Test release with a pre-release tag**
+- [x] **Step 5: (Optional) Test release with a pre-release tag**
 
 ```bash
 git tag v0.0.1-test
