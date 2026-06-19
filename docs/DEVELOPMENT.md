@@ -1,140 +1,140 @@
-# Development Setup
+# 开发环境搭建
 
-This guide walks you through building and running NeoCompanion on your local machine.
+本文档介绍如何在本地构建并运行 NeoCompanion。
 
-## Requirements
+## 环境要求
 
-| Tool | Version | Notes |
-|------|---------|-------|
-| Node.js | 22.x | LTS recommended |
-| pnpm | 10.32+ | Enforced via `packageManager` field |
-| Rust | stable | For Tauri v2 backend |
-| Git | any | |
+| 工具 | 版本 | 说明 |
+|------|------|------|
+| Node.js | 22.x | 建议使用 LTS |
+| pnpm | 10.32+ | 由 `packageManager` 字段强制锁定 |
+| Rust | stable | 用于 Tauri v2 后端 |
+| Git | 任意 | |
 
-### Platform-Specific Tauri Dependencies
+### Tauri 平台依赖
 
-- **Windows**: WebView2 runtime is required. It is included with Windows 11 and recent Windows 10 updates. If missing, install it from [Microsoft](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
-- **macOS**: Install Xcode Command Line Tools:
+- **Windows**：需要 WebView2 运行时。Windows 11 和较新 Windows 10 通常已预装。如缺失，请从 [Microsoft](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) 安装。
+- **macOS**：安装 Xcode Command Line Tools：
   ```bash
   xcode-select --install
   ```
-- **Linux (Debian/Ubuntu)**:
+- **Linux（Debian/Ubuntu）**：
   ```bash
   sudo apt-get update
   sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
   ```
 
-For other Linux distributions, see the [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/).
+其它 Linux 发行版请参考 [Tauri 前置条件](https://v2.tauri.app/start/prerequisites/)。
 
-## Initial Setup
+## 初始设置
 
 ```bash
-# 1. Clone the repository
-git clone <repo-url>
+# 1. 克隆仓库
+git clone <仓库地址>
 cd NeoCompanion
 
-# 2. Install dependencies
+# 2. 安装依赖
 pnpm install
 
-# 3. Copy environment variables
+# 3. 复制环境变量模板
 cp .env.example .env
-# Then edit .env with your keys (see Environment Variables below).
+# 然后编辑 .env 填入你的 key（见下方环境变量说明）
 ```
 
-## Environment Variables
+## 环境变量
 
-The project reads configuration from a root `.env` file during development. See `.env.example` for the template.
+项目开发时从根目录 `.env` 文件读取配置。模板见 `.env.example`。
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DEEPSEEK_API_KEY` | Yes* | — | API key for DeepSeek chat. Required for AI chat to work. |
-| `DEEPSEEK_MODEL` | No | `deepseek-v4-flash` | DeepSeek model name. |
-| `MIMO_API_KEY` | Yes* | — | API key for MiMo TTS. Required for spoken feedback. |
-| `MIMO_TTS_VOICE` | No | `茉莉` | Default MiMo TTS voice. |
-| `NEO_CITY` | No | `Beijing` | City used by the weather service. |
-| `NEO_SERVER_PORT` | No | `10103` | Port the Fastify sidecar listens on. |
+| 变量 | 是否必填 | 默认值 | 说明 |
+|------|----------|--------|------|
+| `DEEPSEEK_API_KEY` | 是* | — | DeepSeek 聊天 API key。AI 对话功能需要。 |
+| `DEEPSEEK_MODEL` | 否 | `deepseek-v4-flash` | DeepSeek 模型名称。 |
+| `MIMO_API_KEY` | 是* | — | MiMo TTS API key。语音反馈功能需要。 |
+| `MIMO_TTS_VOICE` | 否 | `茉莉` | 默认 MiMo TTS 音色。 |
+| `NEO_CITY` | 否 | `Beijing` | 天气服务使用的城市。 |
+| `NEO_SERVER_PORT` | 否 | `10103` | Fastify sidecar 监听端口。 |
 
-*At least one of the AI/AI-adjacent keys is needed to exercise that feature; the app will start without them, but related endpoints will fail.
+*AI / TTS 相关的 key 至少需要一个才能使用该功能；不填也能启动应用，但对应端点会失败。
 
-See [`docs/TTS_SETUP.md`](TTS_SETUP.md) for detailed MiMo TTS configuration.
+详见 [`docs/TTS_SETUP.md`](TTS_SETUP.md) 中的 MiMo TTS 详细配置。
 
-## Running in Development
+## 开发运行
 
-### Desktop app + sidecar (recommended)
+### 桌面应用 + sidecar（推荐）
 
 ```bash
 pnpm dev:tauri
 ```
 
-This starts two processes:
+这会同时启动两个进程：
 
-1. `@neo-companion/server-local` — the Fastify sidecar on `http://127.0.0.1:10103`.
-2. `@neo-companion/desktop` — the Tauri desktop app with hot reload.
+1. `@neo-companion/server-local` — Fastify sidecar，默认 `http://127.0.0.1:10103`
+2. `@neo-companion/desktop` — Tauri 桌面应用，支持热更新
 
-### Web-only frontend + sidecar
+### 纯 Web 前端 + sidecar
 
-Use this for faster frontend iteration without the Rust build:
+适合只做前端 UI 迭代、不需要 Rust 构建的场景：
 
 ```bash
 pnpm dev
 ```
 
-This runs the sidecar plus the Vue dev server. The Tauri-specific features (wallpaper embedding, native window APIs) will not be available.
+这只会启动 sidecar 和 Vue dev server。Tauri 专属功能（壁纸嵌入、原生窗口 API）不可用。
 
-## Common Commands
+## 常用命令
 
 ```bash
-# Typecheck all packages
+# 全仓库类型检查
 pnpm typecheck
 
-# Run all tests
+# 运行全部测试
 pnpm test
 
-# Build all packages
+# 构建全部包
 pnpm build
 
-# Lint (currently an alias for typecheck)
+# lint（目前为 typecheck 别名）
 pnpm lint
 ```
 
-## Project Structure
+## 项目结构
 
 ```
 NeoCompanion/
-├── apps/desktop/src-tauri/   # Rust / Tauri backend
-├── apps/desktop/src/         # Vue 3 frontend
+├── apps/desktop/src-tauri/   # Rust / Tauri 后端
+├── apps/desktop/src/         # Vue 3 前端
 ├── packages/server-local/    # Fastify sidecar
 ├── packages/db/              # SQLite + Drizzle ORM
-├── packages/shared/          # Shared TypeScript types
-├── packages/ai/              # DeepSeek chat adapter
-├── packages/tts/             # MiMo TTS adapter
-└── docs/                     # Project documentation
+├── packages/shared/          # 共享 TypeScript 类型
+├── packages/ai/              # DeepSeek 聊天适配器
+├── packages/tts/             # MiMo TTS 适配器
+└── docs/                     # 项目文档
 ```
 
-## Running Tests
+## 运行测试
 
-See [`docs/TESTING.md`](TESTING.md) for the testing strategy and how to write new tests.
+详见 [`docs/TESTING.md`](TESTING.md)。
 
-## Troubleshooting
+## 常见问题
 
-### `pnpm install` fails on `better-sqlite3`
+### `pnpm install` 在 `better-sqlite3` 上失败
 
-`better-sqlite3` is a native module. Make sure you have a compatible Node.js version and Python available for `node-gyp`. On Windows, use the "Desktop development with C++" workload from Visual Studio Build Tools.
+`better-sqlite3` 是原生模块。请确保 Node.js 版本兼容，且 `node-gyp` 能找到 Python。Windows 上建议安装 Visual Studio Build Tools 的"使用 C++ 的桌面开发"工作负载。
 
-### Tauri build fails on Linux
+### Linux 上 Tauri 构建失败
 
-Double-check that all Tauri Linux dependencies are installed (see prerequisites above). Missing `libayatana-appindicator3-dev` is a common cause.
+请确认已安装全部 Tauri Linux 依赖（见上文）。常见缺失项是 `libayatana-appindicator3-dev`。
 
-### Sidecar port already in use
+### sidecar 端口被占用
 
-Change `NEO_SERVER_PORT` in `.env` to a different port.
+在 `.env` 中修改 `NEO_SERVER_PORT` 为其它端口即可。
 
-### AI chat or TTS returns errors
+### AI 聊天或 TTS 报错
 
-Verify that `DEEPSEEK_API_KEY` and `MIMO_API_KEY` are set in `.env` and that the service endpoints are reachable.
+检查 `.env` 中 `DEEPSEEK_API_KEY` 和 `MIMO_API_KEY` 是否已设置，以及对应服务端点是否可访问。
 
-## Next Steps
+## 下一步
 
-- Read the [system architecture](ARCHITECTURE.md).
-- Explore the [Sidecar API reference](API.md).
-- Check the [testing guide](TESTING.md).
+- 阅读[系统架构设计](ARCHITECTURE.md)
+- 查看 [Sidecar API 参考](API.md)
+- 查看[测试说明](TESTING.md)

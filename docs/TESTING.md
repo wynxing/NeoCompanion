@@ -1,55 +1,55 @@
-# Testing Guide
+# 测试说明
 
-NeoCompanion uses [Vitest](https://vitest.dev/) for unit and integration tests. This guide explains how to run tests and how to write new ones.
+NeoCompanion 使用 [Vitest](https://vitest.dev/) 进行单元测试和集成测试。本文档介绍如何运行测试以及如何编写新测试。
 
-## Running Tests
+## 运行测试
 
 ```bash
-# Run all tests across all packages
+# 运行所有包的测试
 pnpm test
 
-# Run tests for a specific package
+# 运行指定包的测试
 pnpm --filter @neo-companion/server-local test
 pnpm --filter @neo-companion/ai test
 pnpm --filter @neo-companion/db test
 pnpm --filter @neo-companion/tts test
 
-# Run desktop tests only
+# 仅运行桌面端测试
 pnpm --filter @neo-companion/desktop test
 ```
 
-## Test Locations
+## 测试位置
 
-| Package | Test files | Notes |
-|---------|-----------|-------|
-| `packages/ai` | `src/ai.test.ts` | DeepSeek adapter tests |
-| `packages/db` | `src/db.test.ts` | SQLite store tests |
-| `packages/tts` | `src/tts.test.ts` | MiMo TTS adapter tests |
-| `packages/server-local` | `src/tests/app.test.ts`, `src/tests/hook.test.ts` | Fastify integration tests |
-| `apps/desktop` | `tests/markdown-roundtrip.test.ts` | Markdown editor round-trip corpus tests |
+| 包 | 测试文件 | 说明 |
+|----|---------|------|
+| `packages/ai` | `src/ai.test.ts` | DeepSeek 适配器测试 |
+| `packages/db` | `src/db.test.ts` | SQLite store 测试 |
+| `packages/tts` | `src/tts.test.ts` | MiMo TTS 适配器测试 |
+| `packages/server-local` | `src/tests/app.test.ts`、`src/tests/hook.test.ts` | Fastify 集成测试 |
+| `apps/desktop` | `tests/markdown-roundtrip.test.ts` | Markdown 编辑器往返语料测试 |
 
-## Desktop Tests
+## 桌面端测试
 
-The desktop app tests run in a `jsdom` environment configured by `apps/desktop/vitest.config.ts`.
+桌面端测试在 `apps/desktop/vitest.config.ts` 配置的 `jsdom` 环境中运行。
 
-### Markdown Round-Trip Tests
+### Markdown 往返测试
 
-`apps/desktop/tests/markdown-roundtrip.test.ts` validates the custom ProseMirror-to-Markdown serializer in `src/components/markdown-editor/editor/markdownCodec.ts`.
+`apps/desktop/tests/markdown-roundtrip.test.ts` 验证 `src/components/markdown-editor/editor/markdownCodec.ts` 中自定义的 ProseMirror-to-Markdown 序列化器。
 
-- **Supported syntax fixtures** (`tests/fixtures/markdown-corpus/supported/`) must round-trip *semantically*: `parse → serialize → parse` produces the same document tree.
-- **Preserved syntax fixtures** (`tests/fixtures/markdown-corpus/preserved/`) must round-trip *byte-for-byte*: the serializer must not alter the original Markdown.
+- **supported 语法夹具**（`tests/fixtures/markdown-corpus/supported/`）要求*语义级*往返：`parse → serialize → parse` 得到相同文档树。
+- **preserved 语法夹具**（`tests/fixtures/markdown-corpus/preserved/`）要求*字节级*往返：序列化器不能改动原始 Markdown。
 
-To add a new fixture:
+添加新夹具：
 
-1. Create a `.md` file in the appropriate `supported/` or `preserved/` directory.
-2. Run `pnpm --filter @neo-companion/desktop test`.
-3. If the fixture represents a preserved construct, ensure `roundTripMarkdown(source).trim() === source.trim()`.
+1. 在 `supported/` 或 `preserved/` 目录创建 `.md` 文件。
+2. 运行 `pnpm --filter @neo-companion/desktop test`。
+3. 若是 preserved 构造，确保 `roundTripMarkdown(source).trim() === source.trim()`。
 
-## Server-Local Integration Tests
+## server-local 集成测试
 
-The server-local tests use dependency injection to avoid hitting real external APIs or the filesystem.
+server-local 测试使用依赖注入，避免访问真实外部 API 或文件系统。
 
-Example pattern from `packages/server-local/src/tests/app.test.ts`:
+示例模式（来自 `packages/server-local/src/tests/app.test.ts`）：
 
 ```typescript
 import { createDatabase } from "@neo-companion/db";
@@ -58,27 +58,27 @@ import { createApp } from "../app";
 const app = await createApp({
   database: createDatabase(":memory:"),
   startBackground: false,
-  aiStream: async function* () { yield "mock reply"; },
+  aiStream: async function* () { yield "模拟回复"; },
   ttsSpeak: async () => ({ audioUrl: "...", format: "mp3", provider: "mimo", cached: false }),
   weather: async () => ({ city: "Beijing", temperatureC: 20, precipitationChance: 0, text: "..." })
 });
 ```
 
-Key points:
+要点：
 
-- Pass `database: createDatabase(":memory:")` so tests do not touch the production database.
-- Pass `startBackground: false` to disable the 30-second window polling timer.
-- Mock `aiStream`, `ttsSpeak`, and `weather` to keep tests fast and deterministic.
-- Use `app.inject({ method, url, payload })` for HTTP assertions.
+- 传入 `database: createDatabase(":memory:")`，避免触碰生产数据库。
+- 传入 `startBackground: false`，关闭 30 秒窗口轮询定时器。
+- mock `aiStream`、`ttsSpeak`、`weather`，保证测试快速且确定性高。
+- 使用 `app.inject({ method, url, payload })` 进行 HTTP 断言。
 
-## Writing a New Test
+## 编写新测试
 
-1. Place the test file next to the module it tests, or in the package's `tests/` directory.
-2. Use `describe`/`it` from `vitest`.
-3. Prefer Arrange-Act-Assert structure.
-4. For tests that touch the database or sidecar, use the dependency-injection pattern shown above.
-5. Run `pnpm test` before committing.
+1. 将测试文件放在被测模块旁边，或包内的 `tests/` 目录。
+2. 使用 `vitest` 的 `describe`/`it`。
+3. 推荐 Arrange-Act-Assert 结构。
+4. 涉及数据库或 sidecar 的测试，使用上文依赖注入模式。
+5. 提交前运行 `pnpm test`。
 
-## Continuous Integration
+## 持续集成
 
-The `ci-check.yml` workflow runs `pnpm typecheck` and `pnpm test` on every pull request to `main`.
+`ci-check.yml` 工作流会在每个针对 `main` 的 Pull Request 上运行 `pnpm typecheck` 和 `pnpm test`。

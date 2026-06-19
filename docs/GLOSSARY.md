@@ -1,41 +1,41 @@
-# Glossary / 术语表
+# 术语表
 
-This document defines the preferred terminology for NeoCompanion and lists deprecated terms that should be avoided in product copy and new documentation.
+本文档定义 NeoCompanion 的推荐术语，并列出在新文档和用户-facing 文案中应避免使用的旧术语。
 
-## Preferred Terms
+## 推荐术语
 
-| Term | Meaning | Notes |
-|------|---------|-------|
-| **助手 / Assistant** | The floating desktop companion | Default user-facing term. |
-| **悬浮层 / Float Layer** | The layer containing the assistant widget, speech bubbles, and hook badges | Main interaction entry point. |
-| **壁纸层 / Wallpaper Layer** | The desktop wallpaper-embedded status display | Shows weather, time, focus ring, tasks, assistant messages. |
-| **面板层 / Panel Layer** | The main application window for editing tasks, chatting with AI, settings, and hook approvals | Pops up on demand. |
-| **专注 / Focus** | Pomodoro-style focus timer | Assistant accompanies the user during focus sessions. |
-| **任务 / Task** | A to-do item | Unified across the simple task list and the kanban board. |
-| **Hook** | External agent integration mechanism | External scripts push status or request permissions via the local API. |
-| **知识工作空间 / Knowledge Workspace** | Projects, notes, kanban, and AI chat workspace | Introduced in v3.3 UI; real backend storage and search are planned. |
-| **助手寄语 / Assistant Message** | Short, faint status text shown in the wallpaper layer | Previously called "伴侣寄语". |
+| 术语 | 含义 | 备注 |
+|------|------|------|
+| **助手 / Assistant** | 桌面悬浮智能助手 | 默认面向用户的称呼 |
+| **悬浮层 / Float Layer** | 包含助手形象、语音气泡、Hook 角标的层级 | 主要交互入口 |
+| **壁纸层 / Wallpaper Layer** | 嵌入桌面壁纸的状态显示层 | 展示天气、时间、任务、专注环、助手寄语 |
+| **面板层 / Panel Layer** | 用于任务管理、AI 对话、设置、Hook 审批的主应用窗口 | 按需弹出 |
+| **专注 / Focus** | 番茄钟式专注计时 | 助手与用户同步进入专注 |
+| **任务 / Task** | 待办事项 | 在简单任务清单和看板中统一 |
+| **Hook** | 外部 Agent 集成机制 | 外部脚本通过本地 API 推送状态或请求权限 |
+| **知识工作空间 / Knowledge Workspace** | 项目、笔记、看板、AI 对话工作区 | v3.3 已引入 UI；后端存储与检索计划中 |
+| **助手寄语 / Assistant Message** | 壁纸层中央淡出的简短反馈文字 | 旧称"伴侣寄语" |
 
-## Deprecated Terms
+## 弃用术语
 
-| Deprecated Term | Replacement | Status |
-|-----------------|-------------|--------|
-| 桌宠 / Desk Pet | 桌面悬浮助手 / Assistant | Do not use in new docs or UI copy. |
-| 宠物 / Pet | 助手 / Assistant | Do not use in new docs or UI copy. |
-| 主子 | (omit or use "你") | Removed from assistant feedback pool. |
-| 小宠 | 我 | Removed from assistant feedback pool. |
-| 伴侣寄语 | 助手寄语 | Use the new term in product copy. |
-| Companion Layer | Assistant Layer | Use in architecture discussions. |
+| 弃用术语 | 替换为 | 状态 |
+|----------|--------|------|
+| 桌宠 / Desk Pet | 桌面悬浮助手 / Assistant | 新文档与 UI 文案中不再使用 |
+| 宠物 / Pet | 助手 / Assistant | 新文档与 UI 文案中不再使用 |
+| 主子 | （省略或用"你"） | 已从助手反馈池移除 |
+| 小宠 | 我 | 已从助手反馈池移除 |
+| 伴侣寄语 | 助手寄语 | 产品文案使用新称 |
+| Companion Layer | Assistant Layer | 架构讨论使用新称 |
 
-## Code Identifiers
+## 代码标识符
 
-The following identifiers still exist in the codebase for historical reasons and will be renamed in a dedicated refactoring session:
+以下标识符因历史原因仍存在于代码库中，将在后续独立重构会话中重命名：
 
 - `components/pet/`
-- `PetStage.vue`, `PetStatusBar.vue`
+- `PetStage.vue`、`PetStatusBar.vue`
 - `usePetState.ts`
 - `pet.css`
-- `companion:feedback` WebSocket message type
-- `?view=pet` route parameter
+- `companion:feedback` WebSocket 消息类型
+- `?view=pet` 路由参数
 
-Until that refactor is complete, use the **product terminology** in all user-facing copy and new documentation, even when referring to code paths that still contain the old names.
+在该重构完成前，所有面向用户的文案和新文档均应使用**产品术语**，即使引用的代码路径仍包含旧名称。

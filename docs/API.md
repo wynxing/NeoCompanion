@@ -1,22 +1,22 @@
-# Sidecar API Reference
+# Sidecar API 参考
 
-The NeoCompanion sidecar is a Fastify application that runs locally and exposes the REST API and WebSocket endpoints used by the Vue frontend. It is managed by the Tauri Rust core.
+NeoCompanion sidecar 是一个本地 Fastify 应用，为 Vue 前端提供 REST API 和 WebSocket 端点。它由 Tauri Rust 核心管理。
 
-- **Base URL (development)**: `http://127.0.0.1:10103`
-- **Default port**: `10103` (configurable via `NEO_SERVER_PORT`)
-- **WebSocket endpoint**: `/ws`
+- **开发环境 Base URL**：`http://127.0.0.1:10103`
+- **默认端口**：`10103`（可通过 `NEO_SERVER_PORT` 修改）
+- **WebSocket 端点**：`/ws`
 
-All endpoints return JSON unless otherwise noted.
+所有端点默认返回 JSON，除非另有说明。
 
 ---
 
-## Health
+## 健康检查
 
 ### `GET /health`
 
-Returns service health and current timestamp.
+返回服务健康状态和当前时间戳。
 
-**Response:**
+**响应：**
 
 ```json
 {
@@ -28,19 +28,19 @@ Returns service health and current timestamp.
 
 ---
 
-## Tasks
+## 任务
 
 ### `GET /api/tasks`
 
-List all tasks.
+列出所有任务。
 
-**Response:**
+**响应：**
 
 ```json
 [
   {
     "id": "task-1",
-    "title": "Read API docs",
+    "title": "阅读 API 文档",
     "status": "open",
     "createdAt": "2026-06-19T12:00:00.000Z",
     "completedAt": null
@@ -50,50 +50,50 @@ List all tasks.
 
 ### `POST /api/tasks`
 
-Create a new task.
+创建新任务。
 
-**Request body:**
+**请求体：**
 
 ```json
 {
-  "title": "Write tests"
+  "title": "写测试"
 }
 ```
 
-**Response:** the created task object.
+**响应：** 创建后的任务对象。
 
-**Errors:**
+**错误：**
 
 - `400` — `title is required`
 
 ### `PATCH /api/tasks/:id`
 
-Update a task's title or status.
+更新任务标题或状态。
 
-**Request body:**
+**请求体：**
 
 ```json
 {
-  "title": "Updated title",
+  "title": "更新后的标题",
   "status": "done"
 }
 ```
 
-**Response:** the updated task object.
+**响应：** 更新后的任务对象。
 
-**Errors:**
+**错误：**
 
-- `404` — task not found
+- `404` — 任务不存在
 
 ---
 
-## Focus Timer
+## 专注计时
 
 ### `POST /api/focus/start`
 
-Start a new focus session.
+开始新的专注时段。
 
-**Request body:**
+**请求体：**
 
 ```json
 {
@@ -102,29 +102,29 @@ Start a new focus session.
 }
 ```
 
-- `taskId` is optional; `durationMinutes` defaults to `25`.
+- `taskId` 可选；`durationMinutes` 默认 `25`。
 
-**Response:** the created focus session.
+**响应：** 创建的专注会话。
 
 ### `POST /api/focus/:id/complete`
 
-Complete an active focus session.
+完成一个进行中的专注会话。
 
-**Response:** the completed focus session.
+**响应：** 完成后的专注会话。
 
-**Errors:**
+**错误：**
 
-- `404` — focus session not found
+- `404` — 专注会话不存在
 
 ---
 
-## Weather
+## 天气
 
 ### `GET /api/weather`
 
-Get a weather summary for the configured city (`NEO_CITY`).
+获取配置城市（`NEO_CITY`）的天气摘要。
 
-**Response:**
+**响应：**
 
 ```json
 {
@@ -137,60 +137,60 @@ Get a weather summary for the configured city (`NEO_CITY`).
 
 ---
 
-## AI Chat
+## AI 聊天
 
 ### `POST /api/ai/chat`
 
-Send a message to the assistant and receive a streamed response over WebSocket.
+向助手发送消息，并通过 WebSocket 流式返回结果。
 
-**Request body:**
-
-```json
-{
-  "message": "What should I work on next?"
-}
-```
-
-**Response:**
+**请求体：**
 
 ```json
 {
-  "text": "How about reviewing your open tasks?"
+  "message": "接下来该做什么？"
 }
 ```
 
-**WebSocket events emitted during the request:**
+**响应：**
 
-- `companion:feedback` with `state: "thinking"`
-- `ai:chunk` for each streamed chunk
-- `ai:done` when the response is complete
-- `ai:error` on failure
+```json
+{
+  "text": "要不要先查看未完成任务？"
+}
+```
 
-**Errors:**
+**请求过程中会广播以下 WebSocket 事件：**
+
+- `companion:feedback`，状态为 `thinking`
+- `ai:chunk` 每个流式片段
+- `ai:done` 响应完成
+- `ai:error` 失败时
+
+**错误：**
 
 - `400` — `message is required`
-- `500` — AI request failed
+- `500` — AI 请求失败
 
 ---
 
-## Text-to-Speech
+## 语音合成
 
 ### `POST /api/tts/speak`
 
-Convert text to speech using the configured MiMo TTS provider.
+使用配置的 MiMo TTS 提供商将文本转为语音。
 
-**Request body:**
+**请求体：**
 
 ```json
 {
-  "text": "Focus session complete. Take a break!",
+  "text": "专注完成，休息一下吧！",
   "style": "温柔、自然"
 }
 ```
 
-- `style` is optional.
+- `style` 可选。
 
-**Response:**
+**响应：**
 
 ```json
 {
@@ -201,27 +201,27 @@ Convert text to speech using the configured MiMo TTS provider.
 }
 ```
 
-**WebSocket events:**
+**WebSocket 事件：**
 
 - `tts:started`
 - `tts:done`
 
-**Errors:**
+**错误：**
 
 - `400` — `text is required`
-- Errors from the TTS provider are surfaced as `500`
+- TTS 提供商错误会返回 `500`
 
-See [`docs/TTS_SETUP.md`](TTS_SETUP.md) for configuration.
+配置说明见 [`docs/TTS_SETUP.md`](TTS_SETUP.md)。
 
 ---
 
-## Window Activity
+## 窗口活动
 
 ### `GET /api/window/active`
 
-Capture the currently active window and persist it.
+捕获当前活动窗口并持久化。
 
-**Response:**
+**响应：**
 
 ```json
 {
@@ -233,71 +233,71 @@ Capture the currently active window and persist it.
 }
 ```
 
-`classification` is one of: `focused`, `distracted`, `stuck`.
+`classification` 取值：`focused`、`distracted`、`stuck`。
 
-This endpoint is polled automatically every 30 seconds when the sidecar starts.
+sidecar 启动后会每 30 秒自动轮询该端点。
 
 ---
 
-## Hook System
+## Hook 系统
 
-External agents can push status updates and request permission to run commands through the Hook API.
+外部 Agent 可通过 Hook API 推送状态更新或请求执行敏感命令的权限。
 
 ### `POST /api/hook/push`
 
-Push a status update from an external agent.
+推送外部 Agent 的状态更新。
 
-**Request body:**
+**请求体：**
 
 ```json
 {
   "agentId": "ci-server",
   "type": "status",
   "state": "success",
-  "description": "Build passed",
+  "description": "构建通过",
   "timestamp": 1718800000000
 }
 ```
 
-- `timestamp` is optional and defaults to `Date.now()`.
+- `timestamp` 可选，默认 `Date.now()`。
 
-**Response:** `204 No Content`
+**响应：** `204 No Content`
 
-**Errors:**
+**错误：**
 
-- `400` — missing `agentId`, invalid `type`, or missing `state`
+- `400` — 缺少 `agentId`、无效 `type` 或缺少 `state`
 
-Valid `state` values are defined in `@neo-companion/shared`:
-`idle`, `thinking`, `working`, `building`, `waiting`, `success`, `error`, `juggling`, `sleeping`.
+有效 `state` 定义在 `@neo-companion/shared` 中：
+`idle`、`thinking`、`working`、`building`、`waiting`、`success`、`error`、`juggling`、`sleeping`。
 
 ### `POST /api/hook/permission`
 
-Request permission for a sensitive command.
+请求敏感命令的执行权限。
 
-**Request body:**
+**请求体：**
 
 ```json
 {
   "agentId": "deploy-bot",
   "command": "kubectl apply -f production.yaml",
   "severity": 3,
-  "description": "Deploy to production"
+  "description": "部署到生产环境"
 }
 ```
 
-**Response:** the resolved permission decision.
+**响应：** 权限决议结果。
 
-**Errors:**
+**错误：**
 
-- `400` — missing required fields
-- `410` — request became stale or agent state changed
-- `503` — server shutting down
+- `400` — 缺少必填字段
+- `410` — 请求已过期或 Agent 状态变化
+- `503` — 服务正在关闭
 
 ### `GET /api/hook/always-rules`
 
-List "always allow" rules configured by the user.
+列出用户配置的"始终允许"规则。
 
-**Response:**
+**响应：**
 
 ```json
 [
@@ -311,9 +311,9 @@ List "always allow" rules configured by the user.
 
 ### `DELETE /api/hook/always-rules`
 
-Remove an "always allow" rule.
+移除一条"始终允许"规则。
 
-**Request body:**
+**请求体：**
 
 ```json
 {
@@ -322,7 +322,7 @@ Remove an "always allow" rule.
 }
 ```
 
-**Response:** `204 No Content`
+**响应：** `204 No Content`
 
 ---
 
@@ -330,30 +330,30 @@ Remove an "always allow" rule.
 
 ### `GET /ws`
 
-Upgrade to a WebSocket connection for real-time events.
+升级为 WebSocket 连接，用于接收实时事件。
 
-The sidecar broadcasts these message types:
+sidecar 会广播以下消息类型：
 
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `ai:chunk` | Server → Client | Streamed AI response chunk |
-| `ai:done` | Server → Client | AI response complete |
-| `ai:error` | Server → Client | AI call failed |
-| `companion:feedback` | Server → Client | Assistant state/feedback update |
-| `task:statusChanged` | Server → Client | A task was created or updated |
-| `focus:tick` | Server → Client | Focus timer tick |
-| `window:activeChanged` | Server → Client | Active window snapshot updated |
-| `tts:started` | Server → Client | TTS playback started |
-| `tts:done` | Server → Client | TTS playback finished |
-| `hook:statusChanged` | Server → Client | Hook agent status changed |
-| `permission:request` | Server → Client | Permission request pending |
-| `permission:resolved` | Server → Client | Permission request resolved |
-| `permission:autoDismiss` | Server → Client | Permission request auto-dismissed |
-| `permission:response` | Client → Server | User decision for a permission request |
-| `ping` | Client → Server | Keepalive ping |
-| `pong` | Server → Client | Keepalive pong |
+| 类型 | 方向 | 说明 |
+|------|------|------|
+| `ai:chunk` | 服务端 → 客户端 | AI 流式响应片段 |
+| `ai:done` | 服务端 → 客户端 | AI 响应完成 |
+| `ai:error` | 服务端 → 客户端 | AI 调用失败 |
+| `companion:feedback` | 服务端 → 客户端 | 助手状态/反馈更新 |
+| `task:statusChanged` | 服务端 → 客户端 | 任务创建或更新 |
+| `focus:tick` | 服务端 → 客户端 | 专注计时 tick |
+| `window:activeChanged` | 服务端 → 客户端 | 活动窗口快照更新 |
+| `tts:started` | 服务端 → 客户端 | TTS 开始播放 |
+| `tts:done` | 服务端 → 客户端 | TTS 播放完成 |
+| `hook:statusChanged` | 服务端 → 客户端 | Hook Agent 状态变化 |
+| `permission:request` | 服务端 → 客户端 | 权限请求待处理 |
+| `permission:resolved` | 服务端 → 客户端 | 权限请求已决议 |
+| `permission:autoDismiss` | 服务端 → 客户端 | 权限请求自动取消 |
+| `permission:response` | 客户端 → 服务端 | 用户对权限请求的决议 |
+| `ping` | 客户端 → 服务端 | 心跳 ping |
+| `pong` | 服务端 → 客户端 | 心跳 pong |
 
-### Example: responding to a permission request
+### 示例：响应权限请求
 
 ```json
 {
@@ -365,11 +365,11 @@ The sidecar broadcasts these message types:
 }
 ```
 
-`decision` can be `allow`, `deny`, or `always`.
+`decision` 可选：`allow`、`deny`、`always`。
 
 ---
 
-## Notes
+## 说明
 
-- Endpoints related to the knowledge workspace search (`/api/knowledge/*`) are **not yet implemented**. The knowledge workspace UI is currently backed by a front-end mock.
-- Error responses follow the shape `{ "error": "message" }` unless noted otherwise.
+- 知识工作空间相关的搜索端点（`/api/knowledge/*`）**尚未实现**。当前知识工作空间 UI 由前端 mock 驱动。
+- 错误响应格式通常为 `{ "error": "message" }`，除非另有说明。

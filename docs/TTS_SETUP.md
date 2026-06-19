@@ -1,46 +1,46 @@
-# TTS Setup
+# TTS 配置指南
 
-NeoCompanion uses [Xiaomi MiMo TTS](https://www.mimoai.com/) for spoken assistant feedback. This guide explains how to configure it.
+NeoCompanion 使用[小米 MiMo TTS](https://www.mimoai.com/) 作为助手语音反馈引擎。本文档说明如何配置。
 
-## What You Need
+## 需要准备的内容
 
-1. A MiMo TTS API key.
-2. The base URL for the MiMo TTS endpoint.
-3. (Optional) A preferred voice name.
+1. MiMo TTS API key
+2. MiMo TTS 服务端点 base URL
+3. （可选）偏好的音色名称
 
-## Environment Variables
+## 环境变量
 
-Add these variables to your root `.env` file:
+在根目录 `.env` 文件中添加：
 
 ```bash
-MIMO_API_KEY=your-mimo-api-key
-MIMO_TTS_BASE_URL=https://api.mimoai.com/v1/tts   # example; use the URL from your console
+MIMO_API_KEY=你的-mimo-api-key
+MIMO_TTS_BASE_URL=https://api.mimoai.com/v1/tts   # 示例；请使用控制台提供的实际地址
 MIMO_TTS_VOICE=茉莉
 ```
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `MIMO_API_KEY` | Yes | — | Your MiMo TTS API key. |
-| `MIMO_TTS_BASE_URL` | Yes | — | The base URL of the MiMo TTS HTTP endpoint. |
-| `MIMO_TTS_MODEL` | No | `mimo-v2.5-tts` | TTS model identifier. |
-| `MIMO_TTS_VOICE` | No | `茉莉` | Voice name. |
+| 变量 | 是否必填 | 默认值 | 说明 |
+|------|----------|--------|------|
+| `MIMO_API_KEY` | 是 | — | MiMo TTS API key |
+| `MIMO_TTS_BASE_URL` | 是 | — | MiMo TTS HTTP 端点 base URL |
+| `MIMO_TTS_MODEL` | 否 | `mimo-v2.5-tts` | TTS 模型标识 |
+| `MIMO_TTS_VOICE` | 否 | `茉莉` | 音色名称 |
 
-## How to Get Your Credentials
+## 获取凭证
 
-1. Log in to the Xiaomi MiMo TTS console.
-2. Create or copy an API key from the developer/settings page.
-3. Copy the endpoint URL shown in the API documentation for your region/plan.
-4. Paste both values into `.env`.
+1. 登录小米 MiMo TTS 控制台。
+2. 在开发者/设置页面创建或复制 API key。
+3. 从 API 文档中复制对应区域/套餐的端点 URL。
+4. 将两项填入 `.env`。
 
-## Testing TTS
+## 测试 TTS
 
-After configuring `.env`, start the app:
+配置好 `.env` 后启动应用：
 
 ```bash
 pnpm dev:tauri
 ```
 
-Then trigger a focus session or call the TTS endpoint directly:
+然后触发一次专注时段结束，或直接调用 TTS 端点：
 
 ```bash
 curl -X POST http://127.0.0.1:10103/api/tts/speak \
@@ -48,7 +48,7 @@ curl -X POST http://127.0.0.1:10103/api/tts/speak \
   -d '{"text":"你好，NeoCompanion 已准备就绪。"}'
 ```
 
-If configured correctly, the response contains a base64-encoded audio URL:
+配置正确时，响应会包含 base64 编码的音频 URL：
 
 ```json
 {
@@ -59,25 +59,25 @@ If configured correctly, the response contains a base64-encoded audio URL:
 }
 ```
 
-## Troubleshooting
+## 故障排查
 
 ### `Missing MIMO_API_KEY`
 
-`MIMO_API_KEY` is not set in `.env`. Add your API key and restart the sidecar.
+`.env` 中未设置 `MIMO_API_KEY`。添加你的 API key 并重启 sidecar。
 
 ### `Missing MIMO_TTS_BASE_URL`
 
-`MIMO_TTS_BASE_URL` is not set. Add the endpoint URL from the MiMo TTS console to `.env` and restart the sidecar.
+`.env` 中未设置 `MIMO_TTS_BASE_URL`。将控制台提供的端点 URL 填入 `.env` 并重启 sidecar。
 
 ### `MiMo TTS request failed: 401`
 
-The API key is invalid or expired. Verify it in the MiMo console and update `.env`.
+API key 无效或已过期。请在 MiMo 控制台中核对并更新 `.env`。
 
 ### `MiMo TTS request failed: 4xx/5xx`
 
-- Check that `MIMO_TTS_BASE_URL` is correct and includes the full path expected by the endpoint.
-- Confirm the selected model and voice are available in your plan.
+- 检查 `MIMO_TTS_BASE_URL` 是否正确，是否包含端点要求的完整路径。
+- 确认所选模型和音色在你的套餐中可用。
 
-## Fallback Behavior
+## 降级行为
 
-If TTS fails, the assistant still displays the feedback text in the UI. TTS is treated as an enhancement, not a hard dependency for core features.
+TTS 失败时，助手仍会在 UI 中显示反馈文本。TTS 被视为增强体验，不是核心功能的硬依赖。
