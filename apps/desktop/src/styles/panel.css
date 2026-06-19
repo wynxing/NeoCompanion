@@ -962,75 +962,6 @@
   font-size: 0.78rem;
 }
 
-/* ───── Claw steps ───── */
-.nc-claw {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 18px;
-  flex: 1;
-  min-height: 0;
-}
-
-.nc-claw-step {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.78rem;
-  opacity: 0.55;
-}
-
-.nc-claw-step.active {
-  opacity: 1;
-}
-
-.nc-claw-step.done {
-  opacity: 0.85;
-}
-
-.nc-claw-step .pin {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: rgba(15, 23, 42, 0.28);
-}
-
-.nc-claw-step.active .pin {
-  background: var(--blue);
-  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.22);
-}
-
-.nc-claw-step.done .pin {
-  background: rgba(15, 23, 42, 0.56);
-}
-
-.nc-claw .progress {
-  height: 3px;
-  border-radius: 2px;
-  background: rgba(15, 23, 42, 0.12);
-  overflow: hidden;
-}
-
-.nc-claw .progress > i {
-  display: block;
-  height: 100%;
-  width: 62%;
-  background: var(--blue);
-  border-radius: 2px;
-}
-
-.panel-shell.dark-mode .nc-claw-step .pin {
-  background: rgba(255, 255, 255, 0.35);
-}
-
-.panel-shell.dark-mode .nc-claw-step.done .pin {
-  background: rgba(255, 255, 255, 0.7);
-}
-
-.panel-shell.dark-mode .nc-claw .progress {
-  background: rgba(255, 255, 255, 0.12);
-}
-
 /* ───── Mood & State pills ───── */
 .nc-mood {
   display: flex;
@@ -1881,4 +1812,165 @@
     justify-content: center;
     justify-self: stretch;
   }
+}
+
+/* ───── AI 对话卡：项目范围切换 + 召回来源 ───── */
+
+.nc-chat-scope {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(15, 23, 42, 0.06);
+  border-radius: 999px;
+  font-size: 0.7rem;
+}
+
+.panel-shell.dark-mode .nc-chat-scope {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.nc-chat-scope button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  color: var(--panel-muted);
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.nc-chat-scope button.active {
+  background: #fff;
+  color: #1a1a1a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.panel-shell.dark-mode .nc-chat-scope button.active {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.nc-chat-sources {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  font-size: 0.75rem;
+}
+
+.panel-shell.dark-mode .nc-chat-sources {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.nc-chat-sources-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.72rem;
+  color: var(--panel-muted);
+  margin-bottom: 8px;
+}
+
+.nc-chat-sources-head .scope-tag {
+  margin-left: auto;
+  font-size: 0.66rem;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.panel-shell.dark-mode .nc-chat-sources-head .scope-tag {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.nc-chat-sources ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nc-chat-sources li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 10px;
+}
+
+.panel-shell.dark-mode .nc-chat-sources li {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.nc-chat-sources .kind {
+  font-size: 0.62rem;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.14);
+  color: #2563eb;
+  flex: none;
+  margin-top: 1px;
+}
+
+.nc-chat-sources .kind[data-type="task"] {
+  background: rgba(34, 197, 94, 0.14);
+  color: #15803d;
+}
+
+.nc-chat-sources .body {
+  flex: 1;
+  min-width: 0;
+}
+
+.nc-chat-sources .title {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-main, #1a1a1a);
+}
+
+.panel-shell.dark-mode .nc-chat-sources .title {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.nc-chat-sources .excerpt {
+  font-size: 0.7rem;
+  color: var(--panel-muted);
+  margin-top: 2px;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.nc-chat-sources .open-btn {
+  appearance: none;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: transparent;
+  font-size: 0.66rem;
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: var(--panel-muted);
+  cursor: not-allowed;
+  flex: none;
+  margin-top: 1px;
+}
+
+.panel-shell.dark-mode .nc-chat-sources .open-btn {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.nc-chat-degraded {
+  font-size: 0.74rem;
+  color: #f59e0b;
+  padding: 4px 8px;
+  background: rgba(245, 158, 11, 0.1);
+  border-radius: 8px;
 }

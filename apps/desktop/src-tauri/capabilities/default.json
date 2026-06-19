@@ -5,6 +5,13 @@
   "windows": ["main", "panel", "wallpaper", "settings"],
   "permissions": [
     "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-primary-monitor",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-show",
+    "core:window:allow-start-dragging",
     "opener:default",
     "window-state:default"
   ]

@@ -21,7 +21,7 @@ import TopNav from "./components/panel/TopNav.vue";
 import CreateFocusCard from "./components/panel/cards/CreateFocusCard.vue";
 import TodayTasksCard from "./components/panel/cards/TodayTasksCard.vue";
 import WeeklyFocusCard from "./components/panel/cards/WeeklyFocusCard.vue";
-import ClawGatewayCard from "./components/panel/cards/ClawGatewayCard.vue";
+import KnowledgeEntryCard from "./components/panel/cards/KnowledgeEntryCard.vue";
 import AssistantStatusCard from "./components/panel/cards/AssistantStatusCard.vue";
 import HookNotificationsCard from "./components/panel/cards/HookNotificationsCard.vue";
 import AiChatCard from "./components/panel/cards/AiChatCard.vue";
@@ -33,20 +33,22 @@ import PageDots from "./components/panel/PageDots.vue";
 import ErrorToast from "./components/shared/ErrorToast.vue";
 import WallpaperView from "./views/WallpaperView.vue";
 import SettingsView from "./views/SettingsView.vue";
+import KnowledgeView from "./views/KnowledgeView.vue";
 import { useSettings } from "./composables/useSettings";
 
 const viewMode = new URLSearchParams(window.location.search).get("view");
 const isPetView = viewMode === "pet";
 const isWallpaperView = viewMode === "wallpaper";
 const isSettingsView = viewMode === "settings";
+const isKnowledgeView = viewMode === "knowledge";
 const isTauriRuntime = "__TAURI_INTERNALS__" in window;
-type PanelPage = "focus" | "tasks" | "weekly" | "claw" | "assistant" | "hooks" | "chat" | "diary";
+type PanelPage = "focus" | "tasks" | "weekly" | "knowledge" | "assistant" | "hooks" | "chat" | "diary";
 
 const panelPages: Array<{ id: PanelPage; label: string }> = [
   { id: "focus", label: "专注" },
   { id: "tasks", label: "任务" },
   { id: "weekly", label: "本周" },
-  { id: "claw", label: "OpenClaw" },
+  { id: "knowledge", label: "知识库" },
   { id: "assistant", label: "助手" },
   { id: "hooks", label: "Hook" },
   { id: "chat", label: "AI 对话" },
@@ -75,7 +77,7 @@ const contextMenu = ref<{ x: number; y: number } | null>(null);
 let disconnectWs: (() => void) | null = null;
 
 onMounted(async () => {
-  if (isSettingsView) {
+  if (isSettingsView || isKnowledgeView) {
     return;
   }
   if (isWallpaperView) {
@@ -160,6 +162,13 @@ async function openSettings() {
   const settings = await WebviewWindow.getByLabel("settings");
   await settings?.show();
   await settings?.setFocus();
+}
+
+async function openKnowledge() {
+  if (!isTauriRuntime) return;
+  const knowledge = await WebviewWindow.getByLabel("knowledge");
+  await knowledge?.show();
+  await knowledge?.setFocus();
 }
 
 async function setWallpaperLayerVisible(visible: boolean) {
@@ -294,6 +303,8 @@ function toggleImmersive() {
 
   <SettingsView v-else-if="isSettingsView" />
 
+  <KnowledgeView v-else-if="isKnowledgeView" />
+
   <main v-else class="panel-shell" :class="{ 'dark-mode': isPanelDark }">
     <!-- Noise texture filter -->
     <svg width="0" height="0" style="position: absolute">
@@ -331,7 +342,7 @@ function toggleImmersive() {
 
       <WeeklyFocusCard v-else-if="activePanelPage === 'weekly'" @start-focus="onStartFocusFromCard" />
 
-      <ClawGatewayCard v-else-if="activePanelPage === 'claw'" />
+      <KnowledgeEntryCard v-else-if="activePanelPage === 'knowledge'" @open-knowledge="openKnowledge" />
 
       <AssistantStatusCard v-else-if="activePanelPage === 'assistant'" :pet-state="pet.petState.value" />
 

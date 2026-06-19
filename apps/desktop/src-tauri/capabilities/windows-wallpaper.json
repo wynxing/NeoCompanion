@@ -3,7 +3,7 @@
   "identifier": "windows-wallpaper",
   "description": "Wallpaper plugin — Windows only",
   "platforms": ["windows"],
-  "windows": ["wallpaper"],
+  "windows": ["main", "wallpaper"],
   "permissions": [
     "wallpaper:default"
   ]

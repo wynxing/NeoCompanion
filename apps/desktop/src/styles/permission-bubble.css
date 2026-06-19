@@ -40,7 +40,6 @@
   background: var(--muted);
 }
 
-.agent-avatar-mini.openclaw { background: #818cf8; }
 .agent-avatar-mini.claude { background: #f0abfc; color: var(--soft); }
 .agent-avatar-mini.ci { background: #38bdf8; color: var(--soft); }
 
@@ -109,7 +108,6 @@
   flex-shrink: 0;
 }
 
-.agent-avatar.openclaw { background: #818cf8; }
 .agent-avatar.claude { background: #f0abfc; color: var(--soft); }
 .agent-avatar.ci { background: #38bdf8; color: var(--soft); }
 

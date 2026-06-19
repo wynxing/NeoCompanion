@@ -8,6 +8,7 @@ import AssistantSection from "../components/settings/sections/AssistantSection.v
 import PersonaSection from "../components/settings/sections/PersonaSection.vue";
 import ModelSection from "../components/settings/sections/ModelSection.vue";
 import PrivacySection from "../components/settings/sections/PrivacySection.vue";
+import KnowledgeSection from "../components/settings/sections/KnowledgeSection.vue";
 import HookSection from "../components/settings/sections/HookSection.vue";
 
 const settings = useSettings();
@@ -40,6 +41,7 @@ const sectionTitle = computed(() => SECTION_TITLES[settings.activeSection.value]
           <PersonaSection v-else-if="settings.activeSection.value === 'persona'" :state="settings" />
           <ModelSection v-else-if="settings.activeSection.value === 'model'" :state="settings" />
           <PrivacySection v-else-if="settings.activeSection.value === 'privacy'" :state="settings" />
+          <KnowledgeSection v-else-if="settings.activeSection.value === 'knowledge'" :state="settings" />
           <HookSection v-else-if="settings.activeSection.value === 'hooks'" :state="settings" />
         </div>
       </main>

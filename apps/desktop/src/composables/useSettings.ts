@@ -14,6 +14,7 @@ export type SettingsSection =
   | "persona"
   | "model"
   | "privacy"
+  | "knowledge"
   | "hooks";
 
 export type MountMode = "tcp" | "uds" | "remote";
@@ -25,6 +26,8 @@ export type ToneStyle = "warm" | "concise" | "humor" | "strict";
 export type NudgeFrequency = "once" | "gentle" | "persistent";
 export type TtsEngine = "edge" | "openai" | "system";
 export type CommandFrequency = string;
+export type EmbeddingProvider = "none" | "openai" | "cohere" | "local";
+export type SearchScope = "current" | "all";
 
 export function useSettings() {
   const isDark = ref(false);
@@ -69,7 +72,17 @@ export function useSettings() {
   const autoScanInject = ref(true);
   const floatingApproval = ref(true);
   const mqttEnabled = ref(false);
-  const openClawDetected = ref(false);
+
+  // —— 知识库（v3.3 新增；mock 状态，等 v2 接 sidecar 时迁出）
+  const embeddingProvider = ref<EmbeddingProvider>("none");
+  const embeddingModel = ref("");
+  const searchScope = ref<SearchScope>("current");
+  const chunkSize = ref("1200");
+  const indexAutoRebuild = ref(true);
+
+  function reindexAll(): void {
+    // mock：v2 接入后会调用 api.reindexKnowledge()
+  }
 
   function toggleTheme(): void {
     isDark.value = !isDark.value;
@@ -129,7 +142,11 @@ export function useSettings() {
     autoScanInject,
     floatingApproval,
     mqttEnabled,
-    openClawDetected,
+    embeddingProvider,
+    embeddingModel,
+    searchScope,
+    chunkSize,
+    indexAutoRebuild,
     // actions
     toggleTheme,
     setSection,
@@ -137,6 +154,7 @@ export function useSettings() {
     selectMount,
     removeBlacklistItem,
     addBlacklistItem,
+    reindexAll,
   };
 }
 
@@ -148,5 +166,6 @@ export const SECTION_TITLES: Record<SettingsSection, string> = {
   persona: "人设配置",
   model: "模型配置",
   privacy: "隐私安全",
+  knowledge: "知识库",
   hooks: "Hook 与连接",
 };

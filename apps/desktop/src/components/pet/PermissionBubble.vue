@@ -21,7 +21,6 @@ function getInitials(agentId: string): string {
 }
 
 function getAgentType(agentId: string): string {
-  if (agentId.startsWith("openclaw")) return "openclaw";
   if (agentId.startsWith("claude")) return "claude";
   if (agentId.startsWith("ci")) return "ci";
   return "custom";

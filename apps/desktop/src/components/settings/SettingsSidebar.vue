@@ -20,6 +20,7 @@ const NAV_ITEMS: NavEntry[] = [
   { id: "persona", label: "人设配置" },
   { id: "model", label: "模型配置" },
   { id: "privacy", label: "隐私安全" },
+  { id: "knowledge", label: "知识库" },
   { id: "hooks", label: "Hook 与连接" },
 ];
 </script>
@@ -60,6 +61,11 @@ const NAV_ITEMS: NavEntry[] = [
         <svg v-else-if="item.id === 'privacy'" viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <rect x="3" y="8" width="12" height="9" rx="2" />
           <path d="M6 8V5a3 3 0 016 0v3" />
+        </svg>
+        <svg v-else-if="item.id === 'knowledge'" viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M3 4a1.5 1.5 0 011.5-1.5H14V14H4.5A1.5 1.5 0 003 15.5z" />
+          <path d="M3 14.5V15.5a1.5 1.5 0 001.5 1.5H14" />
+          <path d="M7 6h4M7 9h3" />
         </svg>
         <svg v-else viewBox="0 0 18 18" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <path d="M9 2v6m0 0a4 4 0 110 8m0-8a4 4 0 100 8" />
