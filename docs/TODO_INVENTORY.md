@@ -39,8 +39,22 @@
 ## 知识工作空间
 
 - **文件**：`apps/desktop/src/composables/useKnowledgeMock.ts`
-- **影响**：整个知识工作空间（项目、笔记、看板、任务）目前为前端 mock 数据。真正的后端端点、SQLite 存储、FTS5 全文检索和 `sqlite-vec` 向量检索计划在 v2 实现。
+- **已交付（v3.3 UI）**：
+  - 卡片化项目浏览器与嵌套项目导航。
+  - 项目工作区（笔记 / 看板 / 任务 / 子项目 tab）。
+  - 按项目自定义看板列与原生 HTML5 拖拽排序。
+  - 双向 wiki 链接 `[[目标]]` / `[[目标|显示文本]]` 与 backlinks 面板。
+  - 底部快速创建条与全局 light/dark 主题切换。
+- **仍为 mock（v2 接入）**：
+  - 真正的后端端点（`/api/notes`、`/api/boards`、`/api/tasks`、`/api/knowledge/*`）。
+  - SQLite 持久化存储、FTS5 全文检索和 `sqlite-vec` 向量检索。
 - **另见**：`docs/ARCHITECTURE.md` §1.2 Document Scope
+
+### 数据模型与迁移待对齐项
+
+- **项目/看板字段名**：`docs/ARCHITECTURE.md` §9.2 原 schema 使用 `projects.name` / `boards.name`，但 v3.3 前端 mock 与 UI 已统一使用 `title`。v2 后端实现时需以 `title` 为准，并在首次迁移中处理。
+- **任务状态枚举**：现有 `tasks.status` 为 `'open' | 'done'`，v3.3 看板工作流为 `'todo' | 'doing' | 'done' | 'archived'`。v2 迁移需将旧任务状态映射到看板列与新枚举。
+- **看板列默认值**：v3.3 中各项目可拥有不同的看板列（如“待办/进行中/已完成/归档”或“待调研/已整理”）。v2 首次迁移需为项目创建默认列，并支持自定义列持久化。
 
 ## 如何更新本清单
 

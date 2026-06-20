@@ -1,10 +1,33 @@
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { eq } from "drizzle-orm";
-import type { FocusSession, Task, WindowSnapshot } from "@neo-companion/shared";
-import { focusSessions, tasks, windowEvents } from "./schema";
+import { and, eq, like, asc } from "drizzle-orm";
+import type {
+  FocusSession,
+  IndexStatus,
+  KnowledgeBoardColumn,
+  KnowledgeNote,
+  KnowledgeProject,
+  KnowledgeSource,
+  KnowledgeTask,
+  KnowledgeTaskStatus,
+  Task,
+  WindowSnapshot
+} from "@neo-companion/shared";
+import {
+  focusSessions,
+  knowledgeBoardColumns,
+  knowledgeChunks,
+  knowledgeNoteTags,
+  knowledgeNotes,
+  knowledgeProjects,
+  knowledgeTags,
+  knowledgeTasks,
+  tasks,
+  windowEvents
+} from "./schema";
 
 export * from "./schema";
+export * from "./knowledge-fs";
 
 export type NeoDatabase =
   | {
@@ -46,6 +69,17 @@ export function createDatabase(filename = process.env.NEO_DB_PATH ?? "neo-compan
       windowEvents: [],
       close: () => {}
     };
+  }
+}
+
+/** True when the better-sqlite3 native binding loads (sqlite path reachable). */
+export function isSqliteAvailable(): boolean {
+  try {
+    const probe = new Database(":memory:");
+    probe.close();
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -95,6 +129,85 @@ export function initSchema(sqlite: Database.Database) {
       captured_at TEXT NOT NULL,
       dwell_seconds INTEGER NOT NULL,
       classification TEXT NOT NULL
+    );
+
+    -- Knowledge Workspace (v2)
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT,
+      parent_id TEXT,
+      color TEXT,
+      icon TEXT,
+      is_inbox INTEGER NOT NULL DEFAULT 0,
+      "order" INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS notes (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS tags (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE
+    );
+
+    CREATE TABLE IF NOT EXISTS note_tags (
+      note_id TEXT NOT NULL,
+      tag_id TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS board_columns (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'todo',
+      "order" INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS knowledge_tasks (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      column_id TEXT,
+      title TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'todo',
+      "order" INTEGER NOT NULL DEFAULT 0,
+      linked_note_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS knowledge_chunks (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      embedding_model TEXT,
+      embedding_dimensions INTEGER,
+      index_status TEXT NOT NULL DEFAULT 'pending',
+      index_error TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    -- FTS5 mirror of chunk content for full-text search (works without sqlite-vec).
+    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
+      content,
+      project_id UNINDEXED,
+      source_type UNINDEXED,
+      source_id UNINDEXED,
+      content_hash UNINDEXED,
+      tokenize = 'trigram'
     );
   `);
 }
@@ -309,5 +422,541 @@ function toFocusRow(session: FocusSession): typeof focusSessions.$inferInsert {
     startedAt: session.startedAt,
     completedAt: session.completedAt,
     durationMinutes: session.durationMinutes
+  };
+}
+
+// ── Knowledge Workspace store ──
+// Sync CRUD over better-sqlite3. Timestamps are stored as ISO TEXT and mapped
+// to epoch-ms numbers to match the frontend mock contract. Tags are synced via
+// the note_tags join on note write. The memory fallback is not supported for
+// knowledge (tests use the sqlite :memory: path, which goes through the sqlite
+// branch) — memory callers get an explicit error.
+
+export interface KnowledgeStore {
+  // Projects
+  listProjects(): KnowledgeProject[];
+  getProject(id: string): KnowledgeProject | null;
+  childProjects(parentId: string): KnowledgeProject[];
+  projectPath(id: string): KnowledgeProject[];
+  createProject(input: { title: string; parentId?: string | null; description?: string; color?: string; icon?: string; isInbox?: boolean; order?: number }): KnowledgeProject;
+  updateProject(id: string, patch: Partial<Pick<KnowledgeProject, "title" | "description" | "color" | "icon" | "parentId" | "order">>): KnowledgeProject | null;
+  deleteProject(id: string): void;
+  ensureInbox(): KnowledgeProject;
+  // Notes
+  notesForProject(projectId: string): KnowledgeNote[];
+  getNote(id: string): KnowledgeNote | null;
+  createNote(projectId: string, title: string): KnowledgeNote;
+  updateNote(id: string, patch: Partial<Pick<KnowledgeNote, "title" | "body" | "tags">>): KnowledgeNote | null;
+  deleteNote(id: string): void;
+  backlinksFor(targetId: string): { sourceType: "note" | "task"; sourceId: string }[];
+  // Board columns
+  columnsForProject(projectId: string): KnowledgeBoardColumn[];
+  createColumn(projectId: string, input: { title: string; status: KnowledgeTaskStatus; order: number }): KnowledgeBoardColumn;
+  updateColumn(id: string, patch: Partial<Pick<KnowledgeBoardColumn, "title" | "status" | "order">>): KnowledgeBoardColumn | null;
+  deleteColumn(id: string): void;
+  // Tasks
+  tasksForProject(projectId: string): KnowledgeTask[];
+  createTask(projectId: string, columnId: string, title: string): KnowledgeTask;
+  updateTask(id: string, patch: { title?: string; description?: string; status?: KnowledgeTaskStatus; columnId?: string; order?: number; linkedNoteId?: string | null }): KnowledgeTask | null;
+  deleteTask(id: string): void;
+  moveTask(taskId: string, targetColumnId: string, targetIndex: number): void;
+  // Indexing (Phase 2). `chunk` is injected so the db package stays free of
+  // server-local's chunker dependency.
+  reindexNote(note: KnowledgeNote, chunk: (text: string) => { content: string; contentHash: string }[]): void;
+  reindexTask(task: KnowledgeTask, chunk: (text: string) => { content: string; contentHash: string }[]): void;
+  removeIndex(sourceType: "note" | "task", sourceId: string): void;
+  searchFts(projectId: string | null, query: string, limit: number): KnowledgeSource[];
+  markStale(embeddingModel?: string): void;
+  getIndexStatus(providerConfigured: boolean, vectorExtensionAvailable: boolean): IndexStatus;
+}
+
+function isoToMs(iso: string | null): number {
+  if (!iso) return 0;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? 0 : t;
+}
+
+export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
+  if (database.kind !== "sqlite") {
+    throw new Error("Knowledge store requires a sqlite database (memory fallback unsupported)");
+  }
+  const { db, sqlite } = database;
+
+  // ── tags helpers ──
+  function ensureTagIds(names: string[]): string[] {
+    const ids: string[] = [];
+    for (const name of names) {
+      const trimmed = name.trim();
+      if (!trimmed) continue;
+      const existing = db.select().from(knowledgeTags).where(eq(knowledgeTags.name, trimmed)).get();
+      if (existing) {
+        ids.push(existing.id);
+      } else {
+        const id = crypto.randomUUID();
+        db.insert(knowledgeTags).values({ id, name: trimmed }).run();
+        ids.push(id);
+      }
+    }
+    return ids;
+  }
+
+  function loadNoteTags(noteId: string): string[] {
+    const rows = db
+      .select({ name: knowledgeTags.name })
+      .from(knowledgeNoteTags)
+      .innerJoin(knowledgeTags, eq(knowledgeNoteTags.tagId, knowledgeTags.id))
+      .where(eq(knowledgeNoteTags.noteId, noteId))
+      .all();
+    return rows.map((r) => r.name);
+  }
+
+  function syncNoteTags(noteId: string, tags: string[]): void {
+    db.delete(knowledgeNoteTags).where(eq(knowledgeNoteTags.noteId, noteId)).run();
+    const ids = ensureTagIds(tags);
+    if (ids.length) {
+      db.insert(knowledgeNoteTags).values(ids.map((tagId) => ({ noteId, tagId }))).run();
+    }
+  }
+
+  // ── mappers ──
+  function rowToProject(row: typeof knowledgeProjects.$inferSelect): KnowledgeProject {
+    return {
+      id: row.id,
+      title: row.title,
+      description: row.description ?? undefined,
+      parentId: row.parentId,
+      color: row.color ?? undefined,
+      icon: row.icon ?? undefined,
+      isInbox: row.isInbox,
+      order: row.order,
+      createdAt: isoToMs(row.createdAt),
+      updatedAt: isoToMs(row.updatedAt)
+    };
+  }
+
+  function rowToNote(row: typeof knowledgeNotes.$inferSelect): KnowledgeNote {
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      title: row.title,
+      body: row.body,
+      tags: loadNoteTags(row.id),
+      createdAt: isoToMs(row.createdAt),
+      updatedAt: isoToMs(row.updatedAt)
+    };
+  }
+
+  function rowToColumn(row: typeof knowledgeBoardColumns.$inferSelect): KnowledgeBoardColumn {
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      title: row.title,
+      status: row.status,
+      order: row.order
+    };
+  }
+
+  function rowToTask(row: typeof knowledgeTasks.$inferSelect): KnowledgeTask {
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      columnId: row.columnId ?? "",
+      title: row.title,
+      description: row.description ?? undefined,
+      status: row.status,
+      order: row.order,
+      linkedNoteId: row.linkedNoteId ?? undefined,
+      tags: [],
+      createdAt: isoToMs(row.createdAt),
+      updatedAt: isoToMs(row.updatedAt)
+    };
+  }
+
+  function nowIso(): string {
+    return new Date().toISOString();
+  }
+
+  // ── projects ──
+  function listProjects(): KnowledgeProject[] {
+    return db.select().from(knowledgeProjects).orderBy(asc(knowledgeProjects.order)).all().map(rowToProject);
+  }
+  function getProject(id: string): KnowledgeProject | null {
+    const row = db.select().from(knowledgeProjects).where(eq(knowledgeProjects.id, id)).get();
+    return row ? rowToProject(row) : null;
+  }
+  function childProjects(parentId: string): KnowledgeProject[] {
+    return db.select().from(knowledgeProjects).where(eq(knowledgeProjects.parentId, parentId)).orderBy(asc(knowledgeProjects.order)).all().map(rowToProject);
+  }
+  function projectPath(id: string): KnowledgeProject[] {
+    const path: KnowledgeProject[] = [];
+    let current = getProject(id);
+    let guard = 0;
+    while (current && guard < 32) {
+      path.unshift(current);
+      current = current.parentId ? getProject(current.parentId) : null;
+      guard += 1;
+    }
+    return path;
+  }
+  function createProject(input: { title: string; parentId?: string | null; description?: string; color?: string; icon?: string; isInbox?: boolean; order?: number }): KnowledgeProject {
+    const id = crypto.randomUUID();
+    const ts = nowIso();
+    db.insert(knowledgeProjects).values({
+      id,
+      title: input.title.trim(),
+      description: input.description ?? null,
+      parentId: input.parentId ?? null,
+      color: input.color ?? null,
+      icon: input.icon ?? null,
+      isInbox: input.isInbox ?? false,
+      order: input.order ?? 0,
+      createdAt: ts,
+      updatedAt: ts
+    }).run();
+    return getProject(id)!;
+  }
+  function updateProject(id: string, patch: Partial<Pick<KnowledgeProject, "title" | "description" | "color" | "icon" | "parentId" | "order">>): KnowledgeProject | null {
+    const existing = db.select().from(knowledgeProjects).where(eq(knowledgeProjects.id, id)).get();
+    if (!existing) return null;
+    db.update(knowledgeProjects).set({
+      title: patch.title?.trim() ?? existing.title,
+      description: patch.description !== undefined ? patch.description : existing.description,
+      color: patch.color !== undefined ? patch.color : existing.color,
+      icon: patch.icon !== undefined ? patch.icon : existing.icon,
+      parentId: patch.parentId !== undefined ? patch.parentId : existing.parentId,
+      order: patch.order ?? existing.order,
+      updatedAt: nowIso()
+    }).where(eq(knowledgeProjects.id, id)).run();
+    return getProject(id);
+  }
+  function deleteProject(id: string): void {
+    // cascade: notes (→ tags), columns, tasks, chunks
+    db.delete(knowledgeNotes).where(eq(knowledgeNotes.projectId, id)).run();
+    db.delete(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.projectId, id)).run();
+    db.delete(knowledgeTasks).where(eq(knowledgeTasks.projectId, id)).run();
+    db.delete(knowledgeChunks).where(eq(knowledgeChunks.projectId, id)).run();
+    db.delete(knowledgeProjects).where(eq(knowledgeProjects.id, id)).run();
+  }
+  function ensureInbox(): KnowledgeProject {
+    const existing = db.select().from(knowledgeProjects).where(eq(knowledgeProjects.isInbox, true)).get();
+    if (existing) return rowToProject(existing);
+    return createProject({ title: "收件箱", description: "临时想法与未分类内容", color: "#6b7280", isInbox: true, order: 0 });
+  }
+
+  // ── notes ──
+  function notesForProject(projectId: string): KnowledgeNote[] {
+    return db.select().from(knowledgeNotes).where(eq(knowledgeNotes.projectId, projectId)).orderBy(asc(knowledgeNotes.updatedAt)).all().map(rowToNote);
+  }
+  function getNote(id: string): KnowledgeNote | null {
+    const row = db.select().from(knowledgeNotes).where(eq(knowledgeNotes.id, id)).get();
+    return row ? rowToNote(row) : null;
+  }
+  function createNote(projectId: string, title: string): KnowledgeNote {
+    const id = crypto.randomUUID();
+    const ts = nowIso();
+    db.insert(knowledgeNotes).values({
+      id,
+      projectId,
+      title: title.trim() || "无标题笔记",
+      body: "",
+      createdAt: ts,
+      updatedAt: ts
+    }).run();
+    return getNote(id)!;
+  }
+  function updateNote(id: string, patch: Partial<Pick<KnowledgeNote, "title" | "body" | "tags">>): KnowledgeNote | null {
+    const existing = db.select().from(knowledgeNotes).where(eq(knowledgeNotes.id, id)).get();
+    if (!existing) return null;
+    db.update(knowledgeNotes).set({
+      title: patch.title !== undefined ? patch.title.trim() : existing.title,
+      body: patch.body !== undefined ? patch.body : existing.body,
+      updatedAt: nowIso()
+    }).where(eq(knowledgeNotes.id, id)).run();
+    if (patch.tags !== undefined) syncNoteTags(id, patch.tags);
+    return getNote(id);
+  }
+  function deleteNote(id: string): void {
+    db.delete(knowledgeNoteTags).where(eq(knowledgeNoteTags.noteId, id)).run();
+    db.delete(knowledgeNotes).where(eq(knowledgeNotes.id, id)).run();
+    db.delete(knowledgeChunks).where(eq(knowledgeChunks.sourceId, id)).run();
+  }
+  function backlinksFor(targetId: string): { sourceType: "note" | "task"; sourceId: string }[] {
+    // Basic [[target]] scan; upgraded to FTS in Phase 2.
+    const pattern = `%[[${targetId}]%`;
+    const notes = db
+      .select({ id: knowledgeNotes.id })
+      .from(knowledgeNotes)
+      .where(like(knowledgeNotes.body, pattern))
+      .all()
+      .map((r) => ({ sourceType: "note" as const, sourceId: r.id }));
+    return notes;
+  }
+
+  // ── columns ──
+  function columnsForProject(projectId: string): KnowledgeBoardColumn[] {
+    return db.select().from(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.projectId, projectId)).orderBy(asc(knowledgeBoardColumns.order)).all().map(rowToColumn);
+  }
+  function createColumn(projectId: string, input: { title: string; status: KnowledgeTaskStatus; order: number }): KnowledgeBoardColumn {
+    const id = crypto.randomUUID();
+    db.insert(knowledgeBoardColumns).values({ id, projectId, title: input.title.trim(), status: input.status, order: input.order }).run();
+    const row = db.select().from(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.id, id)).get();
+    return rowToColumn(row!);
+  }
+  function updateColumn(id: string, patch: Partial<Pick<KnowledgeBoardColumn, "title" | "status" | "order">>): KnowledgeBoardColumn | null {
+    const existing = db.select().from(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.id, id)).get();
+    if (!existing) return null;
+    db.update(knowledgeBoardColumns).set({
+      title: patch.title?.trim() ?? existing.title,
+      status: patch.status ?? existing.status,
+      order: patch.order ?? existing.order
+    }).where(eq(knowledgeBoardColumns.id, id)).run();
+    const row = db.select().from(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.id, id)).get();
+    return row ? rowToColumn(row) : null;
+  }
+  function deleteColumn(id: string): void {
+    // unhook tasks in this column rather than deleting them
+    db.update(knowledgeTasks).set({ columnId: null }).where(eq(knowledgeTasks.columnId, id)).run();
+    db.delete(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.id, id)).run();
+  }
+
+  // ── tasks ──
+  function tasksForProject(projectId: string): KnowledgeTask[] {
+    return db.select().from(knowledgeTasks).where(eq(knowledgeTasks.projectId, projectId)).orderBy(asc(knowledgeTasks.order)).all().map(rowToTask);
+  }
+  function createTask(projectId: string, columnId: string, title: string): KnowledgeTask {
+    const id = crypto.randomUUID();
+    const ts = nowIso();
+    db.insert(knowledgeTasks).values({
+      id,
+      projectId,
+      columnId: columnId || null,
+      title: title.trim(),
+      status: "todo",
+      order: 0,
+      linkedNoteId: null,
+      createdAt: ts,
+      updatedAt: ts
+    }).run();
+    return rowToTask(db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, id)).get()!);
+  }
+  function updateTask(id: string, patch: { title?: string; description?: string; status?: KnowledgeTaskStatus; columnId?: string; order?: number; linkedNoteId?: string | null }): KnowledgeTask | null {
+    const existing = db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, id)).get();
+    if (!existing) return null;
+    db.update(knowledgeTasks).set({
+      title: patch.title !== undefined ? patch.title.trim() : existing.title,
+      description: patch.description !== undefined ? patch.description : existing.description,
+      status: patch.status ?? existing.status,
+      columnId: patch.columnId !== undefined ? (patch.columnId || null) : existing.columnId,
+      order: patch.order ?? existing.order,
+      linkedNoteId: patch.linkedNoteId !== undefined ? patch.linkedNoteId : existing.linkedNoteId,
+      updatedAt: nowIso()
+    }).where(eq(knowledgeTasks.id, id)).run();
+    const row = db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, id)).get();
+    return row ? rowToTask(row) : null;
+  }
+  function deleteTask(id: string): void {
+    db.delete(knowledgeTasks).where(eq(knowledgeTasks.id, id)).run();
+    db.delete(knowledgeChunks).where(eq(knowledgeChunks.sourceId, id)).run();
+  }
+  function moveTask(taskId: string, targetColumnId: string, targetIndex: number): void {
+    const task = db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, taskId)).get();
+    if (!task) return;
+    const projectId = task.projectId;
+    // shift siblings in target column then place
+    const siblings = db.select().from(knowledgeTasks)
+      .where(and(eq(knowledgeTasks.projectId, projectId), eq(knowledgeTasks.columnId, targetColumnId)))
+      .orderBy(asc(knowledgeTasks.order)).all().filter((t) => t.id !== taskId);
+    const clamped = Math.max(0, Math.min(targetIndex, siblings.length));
+    siblings.splice(clamped, 0, task);
+    siblings.forEach((t, idx) => {
+      db.update(knowledgeTasks).set({ columnId: targetColumnId, order: idx }).where(eq(knowledgeTasks.id, t.id)).run();
+    });
+  }
+
+  // ── indexing (Phase 2): chunk dedup + FTS5 sync ──
+  // Re-chunks a note, replacing its existing chunks. content-hash dedup: chunks
+  // whose hash already exists for this source are reused (skipping re-embed in
+  // Phase 3). FTS5 mirror is written synchronously; embedding stays 'pending'.
+  function reindexNote(note: KnowledgeNote, chunk: (text: string) => { content: string; contentHash: string }[]): void {
+    const text = note.body ? `${note.title}\n\n${note.body}` : note.title;
+    const pieces = chunk(text);
+    // delete existing chunks + FTS rows for this source
+    removeIndex("note", note.id);
+
+    const now = nowIso();
+    let ordinal = 0;
+    for (const piece of pieces) {
+      const chunkId = crypto.randomUUID();
+      db.insert(knowledgeChunks).values({
+        id: chunkId,
+        projectId: note.projectId,
+        sourceType: "note",
+        sourceId: note.id,
+        ordinal,
+        content: piece.content,
+        contentHash: piece.contentHash,
+        embeddingModel: null,
+        embeddingDimensions: null,
+        indexStatus: "pending",
+        indexError: null,
+        updatedAt: now
+      }).run();
+      sqlite.exec(
+        `INSERT INTO knowledge_chunks_fts (content, project_id, source_type, source_id, content_hash)
+         VALUES (${sqlStr(piece.content)}, ${sqlStr(note.projectId)}, 'note', ${sqlStr(note.id)}, ${sqlStr(piece.contentHash)})`
+      );
+      ordinal += 1;
+    }
+  }
+
+  function reindexTask(task: KnowledgeTask, chunk: (text: string) => { content: string; contentHash: string }[]): void {
+    const text = task.description ? `${task.title}\n\n${task.description}` : task.title;
+    const pieces = chunk(text);
+    removeIndex("task", task.id);
+
+    const now = nowIso();
+    let ordinal = 0;
+    for (const piece of pieces) {
+      const chunkId = crypto.randomUUID();
+      db.insert(knowledgeChunks).values({
+        id: chunkId,
+        projectId: task.projectId,
+        sourceType: "task",
+        sourceId: task.id,
+        ordinal,
+        content: piece.content,
+        contentHash: piece.contentHash,
+        embeddingModel: null,
+        embeddingDimensions: null,
+        indexStatus: "pending",
+        indexError: null,
+        updatedAt: now
+      }).run();
+      ordinal += 1;
+    }
+  }
+
+  function removeIndex(sourceType: "note" | "task", sourceId: string): void {
+    // FTS5 delete-then-reinsert: drop matching FTS rows, then the chunk rows.
+    sqlite.exec(
+      `DELETE FROM knowledge_chunks_fts WHERE source_type = ${sqlStr(sourceType)} AND source_id = ${sqlStr(sourceId)}`
+    );
+    db.delete(knowledgeChunks)
+      .where(and(eq(knowledgeChunks.sourceType, sourceType), eq(knowledgeChunks.sourceId, sourceId)))
+      .run();
+  }
+
+  function searchFts(projectId: string | null, query: string, limit: number): KnowledgeSource[] {
+    // trigram tokenizer indexes 3-grams, so CJK queries shorter than 3 chars
+    // (e.g. "向量") won't MATCH reliably. Use FTS5 MATCH for BM25 ranking when
+    // the query is long enough, and fall back to a LIKE substring scan for
+    // short queries so 2-char Chinese terms still hit.
+    const terms = extractTerms(query);
+    if (!terms.length) return [];
+    const useMatch = terms.every((t) => [...t].length >= 3);
+    const cap = Math.max(1, Math.min(limit, 50));
+    const projectClause = projectId ? ` AND k.project_id = ${sqlStr(projectId)}` : "";
+
+    let sql: string;
+    if (useMatch) {
+      const ftsQuery = terms.map((t) => `"${t.replace(/"/g, "")}"*`).join(" OR ");
+      sql = `SELECT k.source_type, k.source_id, k.project_id, k.content,
+                bm25(knowledge_chunks_fts) AS rank
+         FROM knowledge_chunks_fts k
+         WHERE k.content MATCH ${sqlStr(ftsQuery)}${projectClause}
+         ORDER BY rank LIMIT ${cap}`;
+    } else {
+      // LIKE fallback for short CJK terms; rank by position (earlier = better)
+      const likeTerms = terms.map((t) => `k.content LIKE ${sqlStr(`%${t.replace(/[%_]/g, "\\$&")}%`)} ESCAPE '\\'`);
+      sql = `SELECT k.source_type, k.source_id, k.project_id, k.content, 0 AS rank
+         FROM knowledge_chunks_fts k
+         WHERE (${likeTerms.join(" OR ")})${projectClause}
+         LIMIT ${cap}`;
+    }
+    const rows = sqlite.prepare(sql).all() as Array<{
+      source_type: "note" | "task"; source_id: string; project_id: string; content: string; rank: number;
+    }>;
+    // resolve titles + dedup by source (return best chunk per source)
+    const bySource = new Map<string, KnowledgeSource>();
+    for (const row of rows) {
+      const key = `${row.source_type}:${row.source_id}`;
+      if (bySource.has(key)) continue;
+      const title = resolveSourceTitle(row.source_type, row.source_id);
+      bySource.set(key, {
+        sourceType: row.source_type,
+        sourceId: row.source_id,
+        projectId: row.project_id,
+        title,
+        excerpt: deriveExcerpt(row.content),
+        chunkId: key
+      });
+    }
+    return [...bySource.values()];
+  }
+
+  function resolveSourceTitle(sourceType: "note" | "task", sourceId: string): string {
+    if (sourceType === "note") {
+      const row = db.select().from(knowledgeNotes).where(eq(knowledgeNotes.id, sourceId)).get();
+      return row?.title ?? "未命名笔记";
+    }
+    const row = db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, sourceId)).get();
+    return row?.title ?? "未命名任务";
+  }
+
+  function deriveExcerpt(content: string, maxChars = 120): string {
+    const flat = content.replace(/[#>*_~`]/g, "").replace(/\s+/g, " ").trim();
+    return flat.length <= maxChars ? flat : `${flat.slice(0, maxChars - 1)}…`;
+  }
+
+  function markStale(embeddingModel?: string): void {
+    // mark indexed chunks stale when the embedding model changes (Phase 3)
+    if (embeddingModel) {
+      db.update(knowledgeChunks)
+        .set({ indexStatus: "stale" })
+        .where(and(eq(knowledgeChunks.indexStatus, "indexed"), eq(knowledgeChunks.embeddingModel, embeddingModel)))
+        .run();
+    } else {
+      db.update(knowledgeChunks).set({ indexStatus: "stale" }).where(eq(knowledgeChunks.indexStatus, "indexed")).run();
+    }
+  }
+
+  function getIndexStatus(providerConfigured: boolean, vectorExtensionAvailable: boolean): IndexStatus {
+    const countBy = (status: string): number => {
+      const row = sqlite.prepare(
+        `SELECT COUNT(*) AS n FROM knowledge_chunks WHERE index_status = ${sqlStr(status)}`
+      ).get() as { n: number } | undefined;
+      return row?.n ?? 0;
+    };
+    return {
+      mode: vectorExtensionAvailable ? "hybrid" : "fts-only",
+      pending: countBy("pending"),
+      failed: countBy("failed"),
+      stale: countBy("stale"),
+      providerConfigured,
+      vectorExtensionAvailable
+    };
+  }
+
+  // safe SQL string literal (single-quote escape) for raw FTS queries
+  function sqlStr(value: string): string {
+    return `'${value.replace(/'/g, "''")}'`;
+  }
+  function extractTerms(query: string): string[] {
+    // Split on whitespace + common CJK punctuation; keep letters/numbers (incl. CJK).
+    return query
+      .split(/[\s,，。、；;！!？?]+/)
+      .map((t) => t.replace(/[^\p{L}\p{N}]+/gu, ""))
+      .filter(Boolean);
+  }
+
+  // silence unused binding reserved for Phase 3 raw-vec access
+  void sqlite;
+
+  return {
+    listProjects, getProject, childProjects, projectPath, createProject, updateProject, deleteProject, ensureInbox,
+    notesForProject, getNote, createNote, updateNote, deleteNote, backlinksFor,
+    columnsForProject, createColumn, updateColumn, deleteColumn,
+    tasksForProject, createTask, updateTask, deleteTask, moveTask,
+    reindexNote, reindexTask, removeIndex, searchFts, markStale, getIndexStatus
   };
 }

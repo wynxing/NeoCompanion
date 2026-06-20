@@ -5,6 +5,7 @@ use tauri::{LogicalSize, Manager, Size, WindowEvent};
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build());
 
     #[cfg(target_os = "windows")]

@@ -36,7 +36,7 @@
 本文档同时描述 **已实现** 与 **规划中** 的技术设计。已实现的内容指当前代码中真实存在并运行的模块；规划中的内容标注为 `(Planned)` 或 `(Partial)`，例如：
 
 - **已实现**：Tauri 多窗口管理、Fastify Sidecar TCP 模式、SQLite + Drizzle ORM、任务/专注/天气/AI/TTS/窗口/Hook 等核心端点、WebSocket 实时推送、GitHub Actions CI/CD。
-- **部分实现 (Partial)**：v3.3 知识工作空间 UI（前端 mock 阶段，后端存储与检索尚未接入）。
+- **部分实现 (Partial)**：v3.3 知识工作空间 UI 交互层已交付（卡片化项目浏览器、嵌套项目导航、笔记/看板/任务工作区、按项目自定义看板列、HTML5 拖拽排序、双向 wiki 链接与 backlinks、全局 light/dark 主题），但仍为前端 mock 数据，后端 SQLite 存储、FTS5 / `sqlite-vec` 检索与相关 API 尚未接入。
 - **规划中 (Planned)**：FTS5 全文索引、`sqlite-vec` 向量检索与混合排序、零端口 UDS Socket 模式 B、文件监听 Hook、MQTT 接入、屏幕上下文感知与本地长期记忆模块。
 
 阅读时请注意段落中的状态标注，避免将规划内容误认为已交付功能。
@@ -723,10 +723,10 @@ packages/server-local/src/
 知识工作空间新增的跨包公共类型归属 `packages/shared`：
 
 ```typescript
-export interface Project { id: string; name: string; isInbox: boolean }
+export interface Project { id: string; title: string; description?: string; parentId: string | null; isInbox: boolean; order: number }
 export interface Note { id: string; projectId: string; title: string; body: string; tags: string[] }
-export interface Board { id: string; projectId: string; name: string }
-export interface BoardColumn { id: string; boardId: string; name: string; position: number }
+export interface Board { id: string; projectId: string; title: string }
+export interface BoardColumn { id: string; boardId: string; title: string; status: 'todo' | 'doing' | 'done' | 'archived'; position: number }
 
 export interface KnowledgeSource {
   sourceType: 'note' | 'task';
@@ -1072,8 +1072,11 @@ import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
 // 项目。系统迁移时创建默认“收件箱”。
 export const projects = sqliteTable('projects', {
   id: text('id').primaryKey(),
-  name: text('name').notNull(),
+  title: text('title').notNull(),
+  description: text('description'),
+  parentId: text('parent_id').references(() => projects.id),
   isInbox: integer('is_inbox', { mode: 'boolean' }).notNull().default(false),
+  order: integer('order').notNull().default(0),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -1081,14 +1084,15 @@ export const projects = sqliteTable('projects', {
 export const boards = sqliteTable('boards', {
   id: text('id').primaryKey(),
   projectId: text('project_id').notNull().references(() => projects.id),
-  name: text('name').notNull(),
+  title: text('title').notNull(),
   createdAt: text('created_at').notNull(),
 });
 
 export const boardColumns = sqliteTable('board_columns', {
   id: text('id').primaryKey(),
   boardId: text('board_id').notNull().references(() => boards.id),
-  name: text('name').notNull(),
+  title: text('title').notNull(),
+  status: text('status').notNull().default('todo'), // 'todo' | 'doing' | 'done' | 'archived'
   position: integer('position').notNull(),
 });
 
@@ -1100,7 +1104,7 @@ export const tasks = sqliteTable('tasks', {
   columnId: text('column_id').references(() => boardColumns.id),
   title: text('title').notNull(),
   description: text('description'),
-  status: text('status').notNull().default('open'), // 'open' | 'done'
+  status: text('status').notNull().default('todo'), // 'todo' | 'doing' | 'done' | 'archived'
   position: integer('position').notNull().default(0),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -1263,8 +1267,8 @@ pnpm --filter db drizzle-kit migrate   # 执行迁移
 
 知识工作空间首次迁移必须在单一事务中完成：
 
-1. 创建默认“收件箱”项目、默认看板和“待处理 / 进行中 / 已完成”三列。
-2. 为旧 `tasks` 行补齐项目、看板、列、位置和更新时间；`open` 进入“待处理”，`done` 进入“已完成”，保留原 ID、标题和完成时间。
+1. 创建默认“收件箱”项目、默认看板和“待办 / 进行中 / 已完成 / 归档”四列；若项目已存在自定义列，则保留已有列。
+2. 为旧 `tasks` 行补齐项目、看板、列、位置和更新时间；`open` 映射为 `todo` 并进入“待办”列，`done` 映射为 `done` 并进入“已完成”列，保留原 ID、标题和完成时间。
 3. 创建 notes、tags、knowledge_chunks、FTS5 与 sqlite-vec 结构；旧任务随后进入增量索引队列。
 4. sqlite-vec 加载失败不得回滚业务表迁移；记录 `fts-only` 能力状态并继续启动。
 
@@ -1723,7 +1727,7 @@ export async function getApiKey(provider: string): Promise<string> {
 
 | 模块 | v2 新增 |
 |------|---------|
-| apps/desktop | 知识库入口、Markdown 编辑、项目切换、看板、搜索和来源跳转 |
+| apps/desktop | v3.3 已交付交互预览版（卡片化项目浏览器、嵌套项目、笔记/看板/任务工作区、双向链接、主题切换）；v2 接入真实后端与检索 |
 | packages/server-local | Project/Note/Board/Knowledge 模块、增量索引与 RAG 编排 |
 | packages/ai | 聊天模型与 EmbeddingAdapter 分离，OpenAI-compatible Embedding 实现 |
 | packages/db | 项目、笔记、看板、统一任务、知识分块、FTS5 与 sqlite-vec 迁移 |

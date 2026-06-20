@@ -29,8 +29,9 @@ export type CommandFrequency = string;
 export type EmbeddingProvider = "none" | "openai" | "cohere" | "local";
 export type SearchScope = "current" | "all";
 
+const KNOWLEDGE_ROOT_PATH_KEY = "neo:knowledgeRootPath";
+
 export function useSettings() {
-  const isDark = ref(false);
   const activeSection = ref<SettingsSection>("general");
 
   // —— 通用设置
@@ -79,13 +80,22 @@ export function useSettings() {
   const searchScope = ref<SearchScope>("current");
   const chunkSize = ref("1200");
   const indexAutoRebuild = ref(true);
+  // 知识库根目录：阶段 0 仅记录路径并持久化到 localStorage，数据仍为 mock；
+  // v2 文件化存储接入后由 sidecar 读取此路径作为笔记/索引落盘根目录。
+  const knowledgeRootPath = ref<string>(
+    typeof localStorage !== "undefined" ? localStorage.getItem(KNOWLEDGE_ROOT_PATH_KEY) ?? "" : "",
+  );
 
   function reindexAll(): void {
     // mock：v2 接入后会调用 api.reindexKnowledge()
   }
 
-  function toggleTheme(): void {
-    isDark.value = !isDark.value;
+  function setKnowledgeRootPath(path: string): void {
+    const trimmed = path.trim();
+    knowledgeRootPath.value = trimmed;
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(KNOWLEDGE_ROOT_PATH_KEY, trimmed);
+    }
   }
 
   function setSection(id: SettingsSection): void {
@@ -112,7 +122,6 @@ export function useSettings() {
 
   return {
     // state
-    isDark,
     activeSection,
     language,
     autoStart,
@@ -147,14 +156,15 @@ export function useSettings() {
     searchScope,
     chunkSize,
     indexAutoRebuild,
+    knowledgeRootPath,
     // actions
-    toggleTheme,
     setSection,
     selectModel,
     selectMount,
     removeBlacklistItem,
     addBlacklistItem,
     reindexAll,
+    setKnowledgeRootPath,
   };
 }
 

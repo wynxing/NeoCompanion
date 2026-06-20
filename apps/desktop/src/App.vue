@@ -35,6 +35,7 @@ import WallpaperView from "./views/WallpaperView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import KnowledgeView from "./views/KnowledgeView.vue";
 import { useSettings } from "./composables/useSettings";
+import { useTheme } from "./composables/useTheme";
 
 const viewMode = new URLSearchParams(window.location.search).get("view");
 const isPetView = viewMode === "pet";
@@ -67,7 +68,7 @@ const weather = ref<WeatherSummary | null>(null);
 const lastWindow = ref<WindowSnapshot | null>(null);
 const serverReady = ref(false);
 const errorText = ref("");
-const isPanelDark = ref(false);
+const theme = useTheme();
 const activePanelPage = ref<PanelPage>("focus");
 const wallpaperVisible = ref(true);
 const focusStartTime = ref("");
@@ -240,7 +241,7 @@ function onTaskToggle(task: typeof tasks.tasks.value[0]) {
 }
 
 function togglePanelTheme() {
-  isPanelDark.value = !isPanelDark.value;
+  theme.toggleTheme();
 }
 
 function setActivePanelPage(pageId: string) {
@@ -305,7 +306,7 @@ function toggleImmersive() {
 
   <KnowledgeView v-else-if="isKnowledgeView" />
 
-  <main v-else class="panel-shell" :class="{ 'dark-mode': isPanelDark }">
+  <main v-else class="panel-shell" :class="{ 'dark-mode': theme.isDark.value }">
     <!-- Noise texture filter -->
     <svg width="0" height="0" style="position: absolute">
       <filter id="panel-noise-filter">
@@ -317,7 +318,7 @@ function toggleImmersive() {
     <!-- Top navigation -->
     <TopNav
       :pet-state="pet.petState.value"
-      :is-dark="isPanelDark"
+      :is-dark="theme.isDark.value"
       @toggle-theme="togglePanelTheme"
       @open-settings="openSettings"
     />

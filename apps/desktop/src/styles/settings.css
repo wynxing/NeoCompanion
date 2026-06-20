@@ -443,6 +443,22 @@
   margin-left: 16px;
 }
 
+.knowledge-root-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.knowledge-root-action .knowledge-root-path {
+  width: 220px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  cursor: default;
+}
+
 .settings-root .toggle {
   width: 44px;
   height: 26px;
