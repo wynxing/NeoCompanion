@@ -847,20 +847,32 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
   }
 
   function searchFts(projectId: string | null, query: string, limit: number): KnowledgeSource[] {
-    const sanitized = sanitizeFtsQuery(query);
-    if (!sanitized) return [];
-    // FTS5 BM25 via match(); rank by bm25(). Scope by project_id when given.
-    const sql = projectId
-      ? `SELECT k.source_type, k.source_id, k.project_id, k.content,
+    // trigram tokenizer indexes 3-grams, so CJK queries shorter than 3 chars
+    // (e.g. "向量") won't MATCH reliably. Use FTS5 MATCH for BM25 ranking when
+    // the query is long enough, and fall back to a LIKE substring scan for
+    // short queries so 2-char Chinese terms still hit.
+    const terms = extractTerms(query);
+    if (!terms.length) return [];
+    const useMatch = terms.every((t) => [...t].length >= 3);
+    const cap = Math.max(1, Math.min(limit, 50));
+    const projectClause = projectId ? ` AND k.project_id = ${sqlStr(projectId)}` : "";
+
+    let sql: string;
+    if (useMatch) {
+      const ftsQuery = terms.map((t) => `"${t.replace(/"/g, "")}"*`).join(" OR ");
+      sql = `SELECT k.source_type, k.source_id, k.project_id, k.content,
                 bm25(knowledge_chunks_fts) AS rank
          FROM knowledge_chunks_fts k
-         WHERE k.content MATCH ${sqlStr(sanitized)} AND k.project_id = ${sqlStr(projectId)}
-         ORDER BY rank LIMIT ${Math.max(1, Math.min(limit, 50))}`
-      : `SELECT k.source_type, k.source_id, k.project_id, k.content,
-                bm25(knowledge_chunks_fts) AS rank
+         WHERE k.content MATCH ${sqlStr(ftsQuery)}${projectClause}
+         ORDER BY rank LIMIT ${cap}`;
+    } else {
+      // LIKE fallback for short CJK terms; rank by position (earlier = better)
+      const likeTerms = terms.map((t) => `k.content LIKE ${sqlStr(`%${t.replace(/[%_]/g, "\\$&")}%`)} ESCAPE '\\'`);
+      sql = `SELECT k.source_type, k.source_id, k.project_id, k.content, 0 AS rank
          FROM knowledge_chunks_fts k
-         WHERE k.content MATCH ${sqlStr(sanitized)}
-         ORDER BY rank LIMIT ${Math.max(1, Math.min(limit, 50))}`;
+         WHERE (${likeTerms.join(" OR ")})${projectClause}
+         LIMIT ${cap}`;
+    }
     const rows = sqlite.prepare(sql).all() as Array<{
       source_type: "note" | "task"; source_id: string; project_id: string; content: string; rank: number;
     }>;
@@ -929,15 +941,12 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
   function sqlStr(value: string): string {
     return `'${value.replace(/'/g, "''")}'`;
   }
-  function sanitizeFtsQuery(query: string): string {
-    // trigram tokenizer: split into terms, OR-join as prefix queries so short
-    // CJK terms (e.g. 2-char "向量") still match via trigram prefix expansion.
-    const terms = query
-      .split(/[\s,，。、]+/)
+  function extractTerms(query: string): string[] {
+    // Split on whitespace + common CJK punctuation; keep letters/numbers (incl. CJK).
+    return query
+      .split(/[\s,，。、；;！!？?]+/)
       .map((t) => t.replace(/[^\p{L}\p{N}]+/gu, ""))
       .filter(Boolean);
-    if (!terms.length) return "";
-    return terms.map((t) => `"${t.replace(/"/g, "")}"*`).join(" OR ");
   }
 
   // silence unused binding reserved for Phase 3 raw-vec access
