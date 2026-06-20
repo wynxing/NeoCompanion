@@ -2,13 +2,15 @@ import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import { streamDeepSeekChat } from "@neo-companion/ai";
-import { createDatabase, createTaskStore, createWindowEventStore, type NeoDatabase } from "@neo-companion/db";
+import { createDatabase, createKnowledgeStore, createTaskStore, createWindowEventStore, type KnowledgeStore, type NeoDatabase } from "@neo-companion/db";
 import type { ChatMessage, CompanionFeedback, TtsResult } from "@neo-companion/shared";
 import { speakWithMimo } from "@neo-companion/tts";
 import { createFocusManager } from "./services/focus-manager";
 import { createHookManager, type HookManagerEvents } from "./services/hook-manager";
 import { getWeatherSummary } from "./services/weather-service";
 import { getActiveWindowSnapshot } from "./services/window-service";
+import { registerKnowledgeRoutes } from "./modules/knowledge/routes";
+import { createKnowledgeService, type KnowledgeService } from "./modules/knowledge/service";
 import { WsHub } from "./ws-hub";
 
 export interface AppDependencies {
@@ -25,6 +27,11 @@ export async function createApp(dependencies: AppDependencies = {}) {
   const database = dependencies.database ?? createDatabase();
   const taskStore = createTaskStore(database);
   const windowStore = createWindowEventStore(database);
+  // Knowledge store requires the sqlite path; null when only the memory
+  // fallback is reachable (better-sqlite3 native binding unavailable). Routes
+  // degrade to 503 in that case.
+  const knowledgeStore: KnowledgeStore | null = database.kind === "sqlite" ? createKnowledgeStore(database) : null;
+  const knowledgeService: KnowledgeService | null = knowledgeStore ? createKnowledgeService(knowledgeStore) : null;
   const hub = new WsHub();
   const app = Fastify({ logger: true });
   const aiStream = dependencies.aiStream ?? ((messages) => streamDeepSeekChat(messages));
@@ -91,6 +98,8 @@ export async function createApp(dependencies: AppDependencies = {}) {
     hub.broadcast({ type: "task:statusChanged", payload: task });
     return task;
   });
+
+  registerKnowledgeRoutes(app, knowledgeStore, knowledgeService);
 
   app.post("/api/focus/start", async (request) => {
     const body = request.body as { taskId?: string | null; durationMinutes?: number };

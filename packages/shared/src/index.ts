@@ -150,3 +150,100 @@ export interface PermissionAutoDismissPayload {
 
 export const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
 export const LEGACY_DEEPSEEK_MODELS = new Set(["deepseek-chat", "deepseek-reasoner"]);
+
+// ── Knowledge Workspace (v2) ──
+// These types match the frontend mock contract (useKnowledgeMock.ts), which is
+// the de-facto UI contract: epoch-ms timestamps, BoardColumn scoped directly to
+// a project (no boards layer — YAGNI for the current UI), optional color/icon.
+// Note: the v1 pet-panel task feature keeps its own `open|done` TaskStatus above;
+// knowledge kanban tasks use a separate 4-state status and table. Unifying the
+// two is tracked in docs/TODO_INVENTORY.md.
+
+export interface KnowledgeProject {
+  id: string;
+  title: string;
+  description?: string;
+  parentId: string | null;
+  color?: string;
+  icon?: string;
+  isInbox?: boolean;
+  order: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface KnowledgeNote {
+  id: string;
+  projectId: string;
+  title: string;
+  /** Markdown 全文（SSOT）。列表显示请用 excerpt 派生。 */
+  body: string;
+  tags: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type KnowledgeTaskStatus = "todo" | "doing" | "done" | "archived";
+
+/** 看板列，直接归属项目（当前 UI 不暴露多看板层）。 */
+export interface KnowledgeBoardColumn {
+  id: string;
+  projectId: string;
+  title: string;
+  status: KnowledgeTaskStatus;
+  order: number;
+}
+
+export interface KnowledgeTask {
+  id: string;
+  projectId: string;
+  columnId: string;
+  title: string;
+  description?: string;
+  status: KnowledgeTaskStatus;
+  order: number;
+  linkedNoteId?: string;
+  tags: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A retrieval hit used as a citable source in AI answers. */
+export interface KnowledgeSource {
+  sourceType: "note" | "task";
+  sourceId: string;
+  projectId: string;
+  title: string;
+  excerpt: string;
+  chunkId: string;
+}
+
+/** Rich index status returned by the API; the UI maps it to KnowledgeIndexState. */
+export type IndexMode = "hybrid" | "fts-only";
+
+export interface IndexStatus {
+  mode: IndexMode;
+  pending: number;
+  failed: number;
+  stale: number;
+  providerConfigured: boolean;
+  vectorExtensionAvailable: boolean;
+}
+
+/** Simplified UI state consumed by IndexStatusDot. */
+export type KnowledgeIndexState = "ok" | "fts_only" | "indexing";
+
+/** open-notebook RAG移植：AI 对话的两种检索模式。 */
+export type AiRetrievalMode = "chat" | "ask";
+
+/** open-notebook 移植：每条笔记/任务进入 AI 上下文的三级权限。 */
+export type ContextLevel = "full" | "summary" | "excluded";
+
+/** AI 对话统一响应：文本 + 服务端生成的可引用来源 + 实际检索模式。 */
+export interface AiAnswer {
+  text: string;
+  sources: KnowledgeSource[];
+  retrievalMode: AiRetrievalMode;
+}
+
+export type KnowledgeChunkIndexStatus = "pending" | "indexed" | "failed" | "stale";
