@@ -206,7 +206,8 @@ export function initSchema(sqlite: Database.Database) {
       project_id UNINDEXED,
       source_type UNINDEXED,
       source_id UNINDEXED,
-      content_hash UNINDEXED
+      content_hash UNINDEXED,
+      tokenize = 'trigram'
     );
   `);
 }
@@ -929,14 +930,14 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     return `'${value.replace(/'/g, "''")}'`;
   }
   function sanitizeFtsQuery(query: string): string {
-    // FTS5 query syntax: keep alphanumeric + CJK, wrap terms; strip operators.
+    // trigram tokenizer: split into terms, OR-join as prefix queries so short
+    // CJK terms (e.g. 2-char "向量") still match via trigram prefix expansion.
     const terms = query
       .split(/[\s,，。、]+/)
       .map((t) => t.replace(/[^\p{L}\p{N}]+/gu, ""))
       .filter(Boolean);
     if (!terms.length) return "";
-    // OR-join quoted terms so a multi-word query matches any term (lenient).
-    return terms.map((t) => `"${t.replace(/"/g, "")}"`).join(" OR ");
+    return terms.map((t) => `"${t.replace(/"/g, "")}"*`).join(" OR ");
   }
 
   // silence unused binding reserved for Phase 3 raw-vec access
