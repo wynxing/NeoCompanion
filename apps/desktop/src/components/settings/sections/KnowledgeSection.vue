@@ -1,15 +1,17 @@
 <script setup lang="ts">
+import { computed, ref } from "vue";
 import type {
   EmbeddingProvider,
   SearchScope,
   SettingsState,
 } from "../../../composables/useSettings";
+import { open } from "@tauri-apps/plugin-dialog";
 import SettingRow from "../SettingRow.vue";
 import ToggleSwitch from "../ToggleSwitch.vue";
 import TextField from "../TextField.vue";
 import SelectField from "../SelectField.vue";
 
-defineProps<{
+const props = defineProps<{
   state: SettingsState;
 }>();
 
@@ -24,6 +26,24 @@ const scopeOptions: { value: SearchScope; label: string }[] = [
   { value: "current", label: "当前项目" },
   { value: "all", label: "全部项目" },
 ];
+
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const picking = ref(false);
+
+const rootPathDisplay = computed(() => props.state.knowledgeRootPath.value || "未选择");
+
+async function pickRootFolder(): Promise<void> {
+  if (!isTauri || picking.value) return;
+  picking.value = true;
+  try {
+    const selected = await open({ directory: true, multiple: false });
+    if (typeof selected === "string" && selected) {
+      props.state.setKnowledgeRootPath(selected);
+    }
+  } finally {
+    picking.value = false;
+  }
+}
 </script>
 
 <template>
@@ -41,6 +61,31 @@ const scopeOptions: { value: SearchScope; label: string }[] = [
           <div class="section-desc">本地笔记 / 看板与 AI 检索的索引、范围与降级策略</div>
         </div>
       </div>
+
+      <SettingRow
+        label="知识库根目录"
+        hint="笔记与索引数据的存放根目录（阶段 0 仅记录路径，文件化存储将在 v2 接入）"
+      >
+        <template #action>
+          <div class="knowledge-root-action">
+            <input
+              class="text-input knowledge-root-path"
+              :value="rootPathDisplay"
+              readonly
+              :title="state.knowledgeRootPath.value"
+            />
+            <button
+              type="button"
+              class="btn-ghost"
+              :disabled="!isTauri || picking"
+              :title="isTauri ? '' : '需在桌面端选择'"
+              @click="pickRootFolder"
+            >
+              选择文件夹
+            </button>
+          </div>
+        </template>
+      </SettingRow>
 
       <SettingRow label="Embedding Provider" hint="未配置时 AI 检索退化为仅 FTS5 全文搜索；笔记与看板始终可用">
         <template #action>

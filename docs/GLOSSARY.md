@@ -14,6 +14,9 @@
 | **任务 / Task** | 待办事项 | 在简单任务清单和看板中统一 |
 | **Hook** | 外部 Agent 集成机制 | 外部脚本通过本地 API 推送状态或请求权限 |
 | **知识工作空间 / Knowledge Workspace** | 项目、笔记、看板、AI 对话工作区 | v3.3 已引入 UI；后端存储与检索计划中 |
+| **项目卡片 / Project Card** | 知识库入口的卡片化项目展示单元 | v3.3 新增 |
+| **双向链接 / Bidirectional Link** | 笔记中 `[[...]]` 语法，支持来源追踪与 backlinks | v3.3 新增 |
+| **主题切换 / Theme Toggle** | 全局 light/dark 模式切换，作用于 knowledge/panel/settings 三视图 | v3.3 新增 |
 | **助手寄语 / Assistant Message** | 壁纸层中央淡出的简短反馈文字 | 旧称"伴侣寄语" |
 
 ## 弃用术语

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { SECTION_TITLES, useSettings } from "../composables/useSettings";
+import { useTheme } from "../composables/useTheme";
 import SettingsSidebar from "../components/settings/SettingsSidebar.vue";
 import SettingsTopbar from "../components/settings/SettingsTopbar.vue";
 import GeneralSection from "../components/settings/sections/GeneralSection.vue";
@@ -12,12 +13,13 @@ import KnowledgeSection from "../components/settings/sections/KnowledgeSection.v
 import HookSection from "../components/settings/sections/HookSection.vue";
 
 const settings = useSettings();
+const theme = useTheme();
 
 const sectionTitle = computed(() => SECTION_TITLES[settings.activeSection.value]);
 </script>
 
 <template>
-  <div class="settings-root" :class="{ 'dark-mode': settings.isDark.value }" data-view="settings">
+  <div class="settings-root" :class="{ 'dark-mode': theme.isDark.value }" data-view="settings">
     <svg class="settings-noise-defs" aria-hidden="true">
       <filter id="noise-filter">
         <feTurbulence baseFrequency="0.65" numOctaves="3" stitchTiles="stitch" result="noise" />
@@ -31,8 +33,8 @@ const sectionTitle = computed(() => SECTION_TITLES[settings.activeSection.value]
       <main class="main-area">
         <SettingsTopbar
           :title="sectionTitle"
-          :is-dark="settings.isDark.value"
-          @toggle-theme="settings.toggleTheme"
+          :is-dark="theme.isDark.value"
+          @toggle-theme="theme.toggleTheme"
         />
 
         <div class="content-scroll">
