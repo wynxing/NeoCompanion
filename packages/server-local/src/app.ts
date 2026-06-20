@@ -1,8 +1,8 @@
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
-import { streamDeepSeekChat } from "@neo-companion/ai";
-import { createDatabase, createKnowledgeStore, createTaskStore, createWindowEventStore, type KnowledgeStore, type NeoDatabase } from "@neo-companion/db";
+import { streamDeepSeekChat, embedContents } from "@neo-companion/ai";
+import { createAiConversationStore, createDatabase, createKnowledgeStore, createTaskStore, createWindowEventStore, type AiConversationStore, type KnowledgeStore, type NeoDatabase } from "@neo-companion/db";
 import type { ChatMessage, CompanionFeedback, TtsResult } from "@neo-companion/shared";
 import { speakWithMimo } from "@neo-companion/tts";
 import { createFocusManager } from "./services/focus-manager";
@@ -10,7 +10,8 @@ import { createHookManager, type HookManagerEvents } from "./services/hook-manag
 import { getWeatherSummary } from "./services/weather-service";
 import { getActiveWindowSnapshot } from "./services/window-service";
 import { registerKnowledgeRoutes } from "./modules/knowledge/routes";
-import { createKnowledgeService, type KnowledgeService } from "./modules/knowledge/service";
+import { createKnowledgeService, type EmbeddingConfig, type KnowledgeService } from "./modules/knowledge/service";
+import { createAiService, resolveMode, type AiService, type ChatContextSelection } from "./modules/ai/service";
 import { WsHub } from "./ws-hub";
 
 export interface AppDependencies {
@@ -31,10 +32,32 @@ export async function createApp(dependencies: AppDependencies = {}) {
   // fallback is reachable (better-sqlite3 native binding unavailable). Routes
   // degrade to 503 in that case.
   const knowledgeStore: KnowledgeStore | null = database.kind === "sqlite" ? createKnowledgeStore(database) : null;
-  const knowledgeService: KnowledgeService | null = knowledgeStore ? createKnowledgeService(knowledgeStore) : null;
+  // Embedding provider config held in memory (pushed from the client via the
+  // /embedding-config route, like root-path). Survives for the process lifetime.
+  let embeddingConfig: EmbeddingConfig = { provider: "none" };
+  const embeddingConfigController = {
+    get: () => embeddingConfig,
+    set: (next: EmbeddingConfig) => {
+      embeddingConfig = next;
+    }
+  };
+  const knowledgeService: KnowledgeService | null = knowledgeStore
+    ? createKnowledgeService(knowledgeStore, {
+        embedFn: embedContents,
+        getEmbeddingConfig: embeddingConfigController.get
+      })
+    : null;
   const hub = new WsHub();
   const app = Fastify({ logger: true });
   const aiStream = dependencies.aiStream ?? ((messages) => streamDeepSeekChat(messages));
+  const aiConversationStore: AiConversationStore | null = database.kind === "sqlite" ? createAiConversationStore(database) : null;
+  const aiService = createAiService({
+    conversationStore: aiConversationStore,
+    knowledgeService,
+    knowledgeStore,
+    aiStream,
+    hub
+  });
   const ttsSpeak = dependencies.ttsSpeak ?? ((text, style) => speakWithMimo(text, style));
   const windowSnapshot = dependencies.windowSnapshot ?? getActiveWindowSnapshot;
 
@@ -99,7 +122,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
     return task;
   });
 
-  registerKnowledgeRoutes(app, knowledgeStore, knowledgeService);
+  registerKnowledgeRoutes(app, knowledgeStore, knowledgeService, embeddingConfigController);
 
   app.post("/api/focus/start", async (request) => {
     const body = request.body as { taskId?: string | null; durationMinutes?: number };
@@ -120,26 +143,28 @@ export async function createApp(dependencies: AppDependencies = {}) {
   app.get("/api/weather", async () => dependencies.weather?.() ?? getWeatherSummary());
 
   app.post("/api/ai/chat", async (request, reply) => {
-    const body = request.body as { message?: string };
+    const body = request.body as {
+      message?: string;
+      mode?: string;
+      projectId?: string;
+      context?: ChatContextSelection;
+      conversationId?: string;
+    };
     if (!body.message?.trim()) return reply.code(400).send({ error: "message is required" });
 
-    const messages: ChatMessage[] = [
-      { role: "system", content: "你是 NeoCompanion 的中文温柔陪伴助手，回答简洁、具体，不使用强主宠称呼。" },
-      { role: "user", content: body.message }
-    ];
-    let text = "";
-
     try {
-      hub.broadcast({ type: "companion:feedback", payload: { state: "thinking", text: "我想一想。", speak: false } satisfies CompanionFeedback });
-      for await (const chunk of aiStream(messages)) {
-        text += chunk;
-        hub.broadcast({ type: "ai:chunk", payload: { chunk } });
-      }
-      hub.broadcast({ type: "ai:done", payload: { text } });
-      return { text };
+      const mode = resolveMode(body.mode);
+      const answer = mode === "ask"
+        ? await aiService.handleAsk({ message: body.message, projectId: body.projectId ?? null })
+        : await aiService.handleChat({
+            message: body.message,
+            projectId: body.projectId ?? null,
+            context: body.context,
+            conversationId: body.conversationId
+          });
+      return answer;
     } catch (error) {
       const message = error instanceof Error ? error.message : "AI request failed";
-      hub.broadcast({ type: "ai:error", payload: { message } });
       return reply.code(500).send({ error: message });
     }
   });

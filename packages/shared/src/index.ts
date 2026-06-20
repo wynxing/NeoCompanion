@@ -219,7 +219,7 @@ export interface KnowledgeSource {
 }
 
 /** Rich index status returned by the API; the UI maps it to KnowledgeIndexState. */
-export type IndexMode = "hybrid" | "fts-only";
+export type IndexMode = "hybrid" | "fts-only" | "indexing";
 
 export interface IndexStatus {
   mode: IndexMode;
@@ -244,6 +244,24 @@ export interface AiAnswer {
   text: string;
   sources: KnowledgeSource[];
   retrievalMode: AiRetrievalMode;
+}
+
+/** AI 多轮会话（Phase 4，与 v1 pet 对话表分离）。 */
+export interface AiConversation {
+  id: string;
+  projectId: string | null;
+  mode: AiRetrievalMode;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AiMessage {
+  id: string;
+  conversationId: string;
+  role: "system" | "user" | "assistant";
+  content: string;
+  sources: KnowledgeSource[];
+  createdAt: number;
 }
 
 export type KnowledgeChunkIndexStatus = "pending" | "indexed" | "failed" | "stale";

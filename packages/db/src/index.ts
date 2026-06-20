@@ -1,7 +1,11 @@
 import Database from "better-sqlite3";
+import * as sqliteVec from "sqlite-vec";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { and, eq, like, asc } from "drizzle-orm";
+import { and, eq, like, asc, inArray } from "drizzle-orm";
 import type {
+  AiConversation,
+  AiMessage,
+  AiRetrievalMode,
   FocusSession,
   IndexStatus,
   KnowledgeBoardColumn,
@@ -14,6 +18,8 @@ import type {
   WindowSnapshot
 } from "@neo-companion/shared";
 import {
+  aiConversations,
+  aiMessages,
   focusSessions,
   knowledgeBoardColumns,
   knowledgeChunks,
@@ -22,6 +28,7 @@ import {
   knowledgeProjects,
   knowledgeTags,
   knowledgeTasks,
+  embeddingCache,
   tasks,
   windowEvents
 } from "./schema";
@@ -209,7 +216,55 @@ export function initSchema(sqlite: Database.Database) {
       content_hash UNINDEXED,
       tokenize = 'trigram'
     );
+
+    -- Embedding cache (Phase 3): same content_hash → reuse stored vector.
+    CREATE TABLE IF NOT EXISTS embedding_cache (
+      content_hash TEXT PRIMARY KEY,
+      embedding BLOB NOT NULL,
+      model TEXT NOT NULL,
+      dimensions INTEGER NOT NULL
+    );
+
+    -- AI conversations (Phase 4), separate from v1 pet conversations.
+    CREATE TABLE IF NOT EXISTS ai_conversations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      mode TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ai_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      sources_json TEXT,
+      created_at TEXT NOT NULL
+    );
   `);
+}
+
+/** Load the sqlite-vec extension into a connection. Never throws; returns loaded state. */
+export function loadVecExtension(database: NeoDatabase): { loaded: boolean; version?: string } {
+  if (database.kind !== "sqlite") return { loaded: false };
+  try {
+    sqliteVec.load(database.sqlite);
+    const row = database.sqlite.prepare("SELECT vec_version() AS v").get() as { v?: string } | undefined;
+    return { loaded: true, version: row?.v };
+  } catch {
+    return { loaded: false };
+  }
+}
+
+/** Serialize a vector for better-sqlite3 BLOB binding (Float32 little-endian). */
+export function toVecBuffer(vec: number[]): Buffer {
+  return Buffer.from(new Float32Array(vec).buffer);
+}
+
+/** Deserialize a stored BLOB back to a number[]. */
+function bufferToVec(buf: Buffer | Uint8Array): number[] {
+  return Array.from(new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4));
 }
 
 export function createTaskStore(database: NeoDatabase) {
@@ -467,7 +522,20 @@ export interface KnowledgeStore {
   removeIndex(sourceType: "note" | "task", sourceId: string): void;
   searchFts(projectId: string | null, query: string, limit: number): KnowledgeSource[];
   markStale(embeddingModel?: string): void;
-  getIndexStatus(providerConfigured: boolean, vectorExtensionAvailable: boolean): IndexStatus;
+  getIndexStatus(providerConfigured: boolean): IndexStatus;
+  // Vector indexing (Phase 3). vecLoaded reflects whether sqlite-vec loaded.
+  vecLoaded: boolean;
+  ensureVecTable(dim: number): boolean;
+  searchKnn(queryVec: number[], k: number, projectId: string | null): KnowledgeSource[];
+  putVecChunk(chunkId: string, vec: number[]): void;
+  delVecChunk(chunkId: string): void;
+  getCachedEmbedding(contentHash: string): { vector: number[]; dimensions: number } | null;
+  putCachedEmbedding(contentHash: string, vec: number[], model: string, dim: number): void;
+  listPendingChunks(limit: number): Array<{
+    id: string; content: string; contentHash: string; projectId: string; sourceType: "note" | "task"; sourceId: string;
+  }>;
+  markChunkIndexed(chunkId: string, model: string, dim: number): void;
+  markChunkFailed(chunkId: string, error: string): void;
 }
 
 function isoToMs(iso: string | null): number {
@@ -481,6 +549,9 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     throw new Error("Knowledge store requires a sqlite database (memory fallback unsupported)");
   }
   const { db, sqlite } = database;
+  const vecState = loadVecExtension(database);
+  let vecLoaded = vecState.loaded;
+  let vecDim: number | null = null;
 
   // ── tags helpers ──
   function ensureTagIds(names: string[]): string[] {
@@ -832,11 +903,21 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
         indexError: null,
         updatedAt: now
       }).run();
+      sqlite.exec(
+        `INSERT INTO knowledge_chunks_fts (content, project_id, source_type, source_id, content_hash)
+         VALUES (${sqlStr(piece.content)}, ${sqlStr(task.projectId)}, 'task', ${sqlStr(task.id)}, ${sqlStr(piece.contentHash)})`
+      );
       ordinal += 1;
     }
   }
 
   function removeIndex(sourceType: "note" | "task", sourceId: string): void {
+    // Collect chunk ids so we can also drop their vec0 rows before deleting.
+    const chunkIds = db.select({ id: knowledgeChunks.id })
+      .from(knowledgeChunks)
+      .where(and(eq(knowledgeChunks.sourceType, sourceType), eq(knowledgeChunks.sourceId, sourceId)))
+      .all().map((r) => r.id);
+    for (const cid of chunkIds) delVecChunk(cid);
     // FTS5 delete-then-reinsert: drop matching FTS rows, then the chunk rows.
     sqlite.exec(
       `DELETE FROM knowledge_chunks_fts WHERE source_type = ${sqlStr(sourceType)} AND source_id = ${sqlStr(sourceId)}`
@@ -920,21 +1001,152 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     }
   }
 
-  function getIndexStatus(providerConfigured: boolean, vectorExtensionAvailable: boolean): IndexStatus {
+  function getIndexStatus(providerConfigured: boolean): IndexStatus {
     const countBy = (status: string): number => {
       const row = sqlite.prepare(
         `SELECT COUNT(*) AS n FROM knowledge_chunks WHERE index_status = ${sqlStr(status)}`
       ).get() as { n: number } | undefined;
       return row?.n ?? 0;
     };
+    const pending = countBy("pending");
+    const stale = countBy("stale");
+    const hybridCapable = vecLoaded && providerConfigured;
+    const mode: IndexStatus["mode"] = hybridCapable
+      ? pending + stale > 0
+        ? "indexing"
+        : "hybrid"
+      : "fts-only";
     return {
-      mode: vectorExtensionAvailable ? "hybrid" : "fts-only",
-      pending: countBy("pending"),
+      mode,
+      pending,
       failed: countBy("failed"),
-      stale: countBy("stale"),
+      stale,
       providerConfigured,
-      vectorExtensionAvailable
+      vectorExtensionAvailable: vecLoaded
     };
+  }
+
+  // ── vector indexing (Phase 3) ──
+  function ensureVecTable(dim: number): boolean {
+    if (!vecLoaded) return false;
+    if (vecDim === null) {
+      sqlite.exec(
+        `CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_vec USING vec0(chunk_id TEXT PRIMARY KEY, embedding FLOAT[${dim}])`
+      );
+      vecDim = dim;
+    } else if (vecDim !== dim) {
+      // dimension changed (model swap) → drop, recreate, force full re-embed
+      sqlite.exec("DROP TABLE IF EXISTS knowledge_chunks_vec");
+      sqlite.exec(
+        `CREATE VIRTUAL TABLE knowledge_chunks_vec USING vec0(chunk_id TEXT PRIMARY KEY, embedding FLOAT[${dim}])`
+      );
+      vecDim = dim;
+      markStale();
+    }
+    return true;
+  }
+
+  function putVecChunk(chunkId: string, vec: number[]): void {
+    if (!vecLoaded || vecDim === null) return;
+    sqlite.prepare(
+      "INSERT OR REPLACE INTO knowledge_chunks_vec (chunk_id, embedding) VALUES (?, ?)"
+    ).run(chunkId, toVecBuffer(vec));
+  }
+
+  function delVecChunk(chunkId: string): void {
+    if (!vecLoaded || vecDim === null) return;
+    sqlite.prepare("DELETE FROM knowledge_chunks_vec WHERE chunk_id = ?").run(chunkId);
+  }
+
+  function searchKnn(
+    queryVec: number[],
+    k: number,
+    projectId: string | null
+  ): KnowledgeSource[] {
+    if (!vecLoaded || vecDim === null || queryVec.length !== vecDim) return [];
+    const cap = Math.max(1, Math.min(k, 50));
+    const rows = sqlite.prepare(
+      `SELECT v.chunk_id AS chunk_id, v.distance AS distance
+         FROM knowledge_chunks_vec v
+         WHERE v.embedding MATCH ?
+         ORDER BY v.distance
+         LIMIT ${cap}`
+    ).all(toVecBuffer(queryVec)) as Array<{ chunk_id: string; distance: number }>;
+    if (!rows.length) return [];
+    const ids = rows.map((r) => r.chunk_id);
+    const chunkRows = db.select().from(knowledgeChunks).where(inArray(knowledgeChunks.id, ids)).all();
+    const byId = new Map(chunkRows.map((r) => [r.id, r]));
+    // dedup by source (first hit wins — rows are distance-sorted) + resolve title/excerpt
+    const bySource = new Map<string, KnowledgeSource>();
+    for (const r of rows) {
+      const c = byId.get(r.chunk_id);
+      if (!c) continue;
+      if (projectId && c.projectId !== projectId) continue;
+      const key = `${c.sourceType}:${c.sourceId}`;
+      if (bySource.has(key)) continue;
+      bySource.set(key, {
+        sourceType: c.sourceType,
+        sourceId: c.sourceId,
+        projectId: c.projectId,
+        title: resolveSourceTitle(c.sourceType, c.sourceId),
+        excerpt: deriveExcerpt(c.content),
+        chunkId: r.chunk_id
+      });
+    }
+    return [...bySource.values()];
+  }
+
+  function getCachedEmbedding(contentHash: string): { vector: number[]; dimensions: number } | null {
+    const row = db.select().from(embeddingCache).where(eq(embeddingCache.contentHash, contentHash)).get();
+    if (!row) return null;
+    return { vector: bufferToVec(row.embedding), dimensions: row.dimensions };
+  }
+
+  function putCachedEmbedding(contentHash: string, vec: number[], model: string, dim: number): void {
+    db.insert(embeddingCache).values({
+      contentHash,
+      embedding: toVecBuffer(vec),
+      model,
+      dimensions: dim
+    }).onConflictDoUpdate({
+      target: embeddingCache.contentHash,
+      set: { embedding: toVecBuffer(vec), model, dimensions: dim }
+    }).run();
+  }
+
+  function listPendingChunks(limit: number): Array<{
+    id: string; content: string; contentHash: string; projectId: string; sourceType: "note" | "task"; sourceId: string;
+  }> {
+    return db.select({
+      id: knowledgeChunks.id,
+      content: knowledgeChunks.content,
+      contentHash: knowledgeChunks.contentHash,
+      projectId: knowledgeChunks.projectId,
+      sourceType: knowledgeChunks.sourceType,
+      sourceId: knowledgeChunks.sourceId
+    })
+      .from(knowledgeChunks)
+      .where(inArray(knowledgeChunks.indexStatus, ["pending", "stale"]))
+      .limit(limit)
+      .all();
+  }
+
+  function markChunkIndexed(chunkId: string, model: string, dim: number): void {
+    db.update(knowledgeChunks).set({
+      indexStatus: "indexed",
+      embeddingModel: model,
+      embeddingDimensions: dim,
+      indexError: null,
+      updatedAt: nowIso()
+    }).where(eq(knowledgeChunks.id, chunkId)).run();
+  }
+
+  function markChunkFailed(chunkId: string, error: string): void {
+    db.update(knowledgeChunks).set({
+      indexStatus: "failed",
+      indexError: error,
+      updatedAt: nowIso()
+    }).where(eq(knowledgeChunks.id, chunkId)).run();
   }
 
   // safe SQL string literal (single-quote escape) for raw FTS queries
@@ -949,14 +1161,89 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
       .filter(Boolean);
   }
 
-  // silence unused binding reserved for Phase 3 raw-vec access
-  void sqlite;
-
   return {
     listProjects, getProject, childProjects, projectPath, createProject, updateProject, deleteProject, ensureInbox,
     notesForProject, getNote, createNote, updateNote, deleteNote, backlinksFor,
     columnsForProject, createColumn, updateColumn, deleteColumn,
     tasksForProject, createTask, updateTask, deleteTask, moveTask,
-    reindexNote, reindexTask, removeIndex, searchFts, markStale, getIndexStatus
+    reindexNote, reindexTask, removeIndex, searchFts, markStale, getIndexStatus,
+    get vecLoaded() { return vecLoaded; },
+    ensureVecTable, searchKnn, putVecChunk, delVecChunk, getCachedEmbedding, putCachedEmbedding,
+    listPendingChunks, markChunkIndexed, markChunkFailed
   };
+}
+
+/** AI conversation store (Phase 4): multi-turn chat persistence with sources. */
+export function createAiConversationStore(database: NeoDatabase) {
+  if (database.kind !== "sqlite") {
+    throw new Error("AI conversation store requires a sqlite database");
+  }
+  const { db } = database;
+
+  function createConversation(projectId: string | null, mode: AiRetrievalMode): AiConversation {
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    db.insert(aiConversations).values({ id, projectId, mode, createdAt: ts, updatedAt: ts }).run();
+    return { id, projectId, mode, createdAt: Date.parse(ts), updatedAt: Date.parse(ts) };
+  }
+
+  function getConversation(id: string): AiConversation | null {
+    const row = db.select().from(aiConversations).where(eq(aiConversations.id, id)).get();
+    if (!row) return null;
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      mode: row.mode,
+      createdAt: Date.parse(row.createdAt),
+      updatedAt: Date.parse(row.updatedAt)
+    };
+  }
+
+  function listMessages(conversationId: string): AiMessage[] {
+    return db.select().from(aiMessages)
+      .where(eq(aiMessages.conversationId, conversationId))
+      .orderBy(asc(aiMessages.createdAt))
+      .all()
+      .map((row) => ({
+        id: row.id,
+        conversationId: row.conversationId,
+        role: row.role,
+        content: row.content,
+        sources: row.sourcesJson ? safeParseSources(row.sourcesJson) : [],
+        createdAt: Date.parse(row.createdAt)
+      }));
+  }
+
+  function appendMessage(
+    conversationId: string,
+    role: AiMessage["role"],
+    content: string,
+    sources: KnowledgeSource[] = []
+  ): AiMessage {
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    db.insert(aiMessages).values({
+      id,
+      conversationId,
+      role,
+      content,
+      sourcesJson: sources.length ? JSON.stringify(sources) : null,
+      createdAt: ts
+    }).run();
+    db.update(aiConversations).set({ updatedAt: ts }).where(eq(aiConversations.id, conversationId)).run();
+    return { id, conversationId, role, content, sources, createdAt: Date.parse(ts) };
+  }
+
+  return { createConversation, getConversation, listMessages, appendMessage };
+}
+
+export type AiConversationStore = ReturnType<typeof createAiConversationStore>;
+
+function safeParseSources(json: string): KnowledgeSource[] {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? (parsed as KnowledgeSource[]) : [];
+  } catch {
+    return [];
+  }
 }

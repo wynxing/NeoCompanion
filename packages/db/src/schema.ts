@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { blob, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const tasks = sqliteTable("tasks", {
   id: text("id").primaryKey(),
@@ -122,3 +122,32 @@ export const knowledgeChunks = sqliteTable("knowledge_chunks", {
   indexError: text("index_error"),
   updatedAt: text("updated_at").notNull()
 });
+
+// Embedding cache keyed by content hash. Same-hash chunks reuse the stored
+// vector, skipping redundant embedding API calls (Phase 3).
+export const embeddingCache = sqliteTable("embedding_cache", {
+  contentHash: text("content_hash").primaryKey(),
+  embedding: blob("embedding", { mode: "buffer" }).notNull(),
+  model: text("model").notNull(),
+  dimensions: integer("dimensions").notNull()
+});
+
+// AI conversations (Phase 4). Separate from the v1 `conversations`/`messages`
+// tables (pet-panel chat) — these carry knowledge RAG context + sources.
+export const aiConversations = sqliteTable("ai_conversations", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  mode: text("mode", { enum: ["chat", "ask"] }).notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+});
+
+export const aiMessages = sqliteTable("ai_messages", {
+  id: text("id").primaryKey(),
+  conversationId: text("conversation_id").notNull(),
+  role: text("role", { enum: ["system", "user", "assistant"] }).notNull(),
+  content: text("content").notNull(),
+  sourcesJson: text("sources_json"),
+  createdAt: text("created_at").notNull()
+});
+

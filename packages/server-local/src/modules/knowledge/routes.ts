@@ -4,7 +4,13 @@ import type {
   KnowledgeTaskStatus
 } from "@neo-companion/shared";
 import { exportToDir, importFromDir } from "./mirror";
-import type { KnowledgeService } from "./service";
+import type { EmbeddingConfig, KnowledgeService } from "./service";
+
+/** Lets the embedding-config route read/mutate the shared config held in app.ts. */
+export interface EmbeddingConfigController {
+  get(): EmbeddingConfig;
+  set(config: EmbeddingConfig): void;
+}
 
 /**
  * Knowledge workspace REST routes (Phase 1 CRUD).
@@ -16,7 +22,12 @@ import type { KnowledgeService } from "./service";
  * Retrieval (search / index-status / reindex) and AI integration land in
  * Phase 2–4 via modules/knowledge/service.ts.
  */
-export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeStore | null, service: KnowledgeService | null) {
+export function registerKnowledgeRoutes(
+  app: FastifyInstance,
+  store: KnowledgeStore | null,
+  service: KnowledgeService | null,
+  embeddingConfigController?: EmbeddingConfigController
+) {
   // File-mirror root path. The frontend owns the canonical path in localStorage
   // (useSettings.knowledgeRootPath) and pushes it here so the sidecar can do
   // export/import. Empty until the user picks a folder.
@@ -234,14 +245,13 @@ export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeSt
     const query = request.query as { q?: string; projectId?: string; limit?: string };
     if (!query.q?.trim()) return reply.code(400).send({ error: "q is required" });
     const limit = query.limit ? Number.parseInt(query.limit, 10) : 20;
-    return svc.search(query.projectId ?? null, query.q, Number.isFinite(limit) ? limit : 20);
+    return svc.searchHybrid(query.projectId ?? null, query.q, Number.isFinite(limit) ? limit : 20);
   });
 
   app.get("/api/knowledge/index-status", async (request, reply) => {
     const svc = requireService(reply);
     if (!svc) return;
-    // Phase 3 will pass real provider/vector flags; for now FTS-only mode.
-    return svc.indexStatus(false, false);
+    return svc.indexStatus();
   });
 
   app.post("/api/knowledge/reindex", async (request, reply) => {
@@ -250,6 +260,40 @@ export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeSt
     const body = (request.body as { embeddingModel?: string } | null) ?? {};
     if (body.embeddingModel) svc.markStale(body.embeddingModel);
     return svc.reindexAll();
+  });
+
+  // ── Embedding provider config (Phase 3) ──
+  // Server holds the config in memory (pushed from the client, like root-path);
+  // apiKey is never echoed back.
+  app.get("/api/knowledge/embedding-config", async () => {
+    const cfg = embeddingConfigController?.get() ?? { provider: "none" };
+    return {
+      provider: cfg.provider,
+      baseUrl: cfg.baseUrl ?? "",
+      model: cfg.model ?? "",
+      configured: !!cfg.apiKey && cfg.provider !== "none"
+    };
+  });
+
+  app.put("/api/knowledge/embedding-config", async (request, reply) => {
+    if (!embeddingConfigController) return reply.code(503).send({ error: "embedding config unavailable" });
+    const body = request.body as Partial<EmbeddingConfig>;
+    const current = embeddingConfigController.get();
+    // empty apiKey on PUT means "keep existing" (UI masks the secret)
+    const apiKey = body.apiKey ? body.apiKey : current.apiKey;
+    const next: EmbeddingConfig = {
+      provider: body.provider ?? current.provider,
+      baseUrl: body.baseUrl ?? current.baseUrl,
+      apiKey,
+      model: body.model ?? current.model
+    };
+    embeddingConfigController.set(next);
+    // model change → mark stale so chunks re-embed with the new model
+    if (next.model && next.model !== current.model) {
+      service?.markStale(next.model);
+    }
+    await service?.drainEmbeddings();
+    return { ok: true };
   });
 
   // ── File mirror (hybrid SQLite + Markdown/JSONL) ──

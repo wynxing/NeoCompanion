@@ -103,7 +103,17 @@ function createFakeStore(): KnowledgeStore {
     getIndexStatus: () => ({
       mode: "fts-only" as const, pending: 0, failed: 0, stale: 0,
       providerConfigured: false, vectorExtensionAvailable: false
-    })
+    }),
+    vecLoaded: false,
+    ensureVecTable: () => false,
+    searchKnn: () => [],
+    putVecChunk: () => {},
+    delVecChunk: () => {},
+    getCachedEmbedding: () => null as { vector: number[]; dimensions: number } | null,
+    putCachedEmbedding: () => {},
+    listPendingChunks: () => [],
+    markChunkIndexed: () => {},
+    markChunkFailed: () => {}
   };
   return store;
 }

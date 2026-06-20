@@ -90,3 +90,65 @@ describe.skipIf(!SQLITE_AVAILABLE)("knowledge store", () => {
     database.close();
   });
 });
+
+describe.skipIf(!SQLITE_AVAILABLE)("knowledge vector index", () => {
+  it("loads sqlite-vec, writes chunks, and returns KNN hits", () => {
+    const database = createDatabase(":memory:");
+    const kw = createKnowledgeStore(database);
+    expect(kw.vecLoaded).toBe(true);
+
+    const dim = 4;
+    expect(kw.ensureVecTable(dim)).toBe(true);
+
+    const project = kw.createProject({ title: "P" });
+    const note = kw.createNote(project.id, "向量化笔记");
+    kw.updateNote(note.id, { body: "sqlite-vec 向量检索" });
+
+    // simulate an embedded chunk: insert a pending chunk then put its vector
+    const pending = kw.listPendingChunks(10);
+    expect(pending.length).toBeGreaterThanOrEqual(1);
+    const chunk = pending[0];
+    const vec = [0.1, 0.2, 0.3, 0.4];
+    kw.putVecChunk(chunk.id, vec);
+    kw.markChunkIndexed(chunk.id, "test-embed", dim);
+
+    const hits = kw.searchKnn([0.1, 0.2, 0.3, 0.4], 5, null);
+    expect(hits.length).toBeGreaterThanOrEqual(1);
+    expect(hits[0].sourceId).toBe(note.id);
+    expect(hits[0].sourceType).toBe("note");
+    database.close();
+  });
+
+  it("scopes KNN to a project", () => {
+    const database = createDatabase(":memory:");
+    const kw = createKnowledgeStore(database);
+    kw.ensureVecTable(2);
+
+    const a = kw.createProject({ title: "A" });
+    const b = kw.createProject({ title: "B" });
+    const noteA = kw.createNote(a.id, "A 笔记");
+    kw.updateNote(noteA.id, { body: "内容 A" });
+    const noteB = kw.createNote(b.id, "B 笔记");
+    kw.updateNote(noteB.id, { body: "内容 B" });
+
+    const pending = kw.listPendingChunks(20);
+    for (const c of pending) {
+      kw.putVecChunk(c.id, [0.5, 0.5]);
+      kw.markChunkIndexed(c.id, "test-embed", 2);
+    }
+
+    const scopedA = kw.searchKnn([0.5, 0.5], 10, a.id);
+    expect(scopedA.every((h) => h.projectId === a.id)).toBe(true);
+    database.close();
+  });
+
+  it("caches and reuses embeddings by content hash", () => {
+    const database = createDatabase(":memory:");
+    const kw = createKnowledgeStore(database);
+    const vec = [0.1, 0.2, 0.3];
+    kw.putCachedEmbedding("hash-1", vec, "test-embed", 3);
+    expect(kw.getCachedEmbedding("hash-1")).toEqual({ vector: vec, dimensions: 3 });
+    expect(kw.getCachedEmbedding("missing")).toBeNull();
+    database.close();
+  });
+});

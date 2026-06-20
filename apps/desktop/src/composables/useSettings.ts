@@ -1,4 +1,5 @@
 import { ref } from "vue";
+import { api } from "../api";
 
 /**
  * Settings composable — 阶段 1 仅维护本地状态，所有改动留在内存里。
@@ -77,6 +78,12 @@ export function useSettings() {
   // —— 知识库（v3.3 新增；mock 状态，等 v2 接 sidecar 时迁出）
   const embeddingProvider = ref<EmbeddingProvider>("none");
   const embeddingModel = ref("");
+  const embeddingBaseUrl = ref(
+    typeof localStorage !== "undefined" ? localStorage.getItem("neo.embeddingBaseUrl") ?? "" : "",
+  );
+  // apiKey 仅存内存 + 推送服务端，不落 localStorage（敏感）
+  const embeddingApiKey = ref("");
+  const embeddingConfigured = ref(false);
   const searchScope = ref<SearchScope>("current");
   const chunkSize = ref("1200");
   const indexAutoRebuild = ref(true);
@@ -86,8 +93,34 @@ export function useSettings() {
     typeof localStorage !== "undefined" ? localStorage.getItem(KNOWLEDGE_ROOT_PATH_KEY) ?? "" : "",
   );
 
-  function reindexAll(): void {
-    // mock：v2 接入后会调用 api.reindexKnowledge()
+  async function loadEmbeddingConfig(): Promise<void> {
+    try {
+      const status = await api.knowledgeGetEmbeddingConfig();
+      embeddingProvider.value = (status.provider as EmbeddingProvider) || "none";
+      embeddingBaseUrl.value = status.baseUrl;
+      embeddingModel.value = status.model;
+      embeddingConfigured.value = status.configured;
+    } catch {
+      // sidecar 不可用时静默降级
+    }
+  }
+
+  async function saveEmbeddingConfig(): Promise<void> {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem("neo.embeddingBaseUrl", embeddingBaseUrl.value);
+    }
+    await api.knowledgeSetEmbeddingConfig({
+      provider: embeddingProvider.value,
+      baseUrl: embeddingBaseUrl.value || undefined,
+      apiKey: embeddingApiKey.value || undefined,
+      model: embeddingModel.value || undefined
+    });
+    embeddingApiKey.value = ""; // 清空内存中的明文 key
+    await loadEmbeddingConfig();
+  }
+
+  async function reindexAll(): Promise<void> {
+    await api.knowledgeReindex(embeddingModel.value || undefined);
   }
 
   function setKnowledgeRootPath(path: string): void {
@@ -153,6 +186,9 @@ export function useSettings() {
     mqttEnabled,
     embeddingProvider,
     embeddingModel,
+    embeddingBaseUrl,
+    embeddingApiKey,
+    embeddingConfigured,
     searchScope,
     chunkSize,
     indexAutoRebuild,
@@ -165,6 +201,8 @@ export function useSettings() {
     addBlacklistItem,
     reindexAll,
     setKnowledgeRootPath,
+    loadEmbeddingConfig,
+    saveEmbeddingConfig,
   };
 }
 

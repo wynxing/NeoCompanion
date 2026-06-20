@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import type {
   EmbeddingProvider,
   SearchScope,
@@ -29,8 +29,13 @@ const scopeOptions: { value: SearchScope; label: string }[] = [
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const picking = ref(false);
+const saving = ref(false);
 
 const rootPathDisplay = computed(() => props.state.knowledgeRootPath.value || "未选择");
+
+onMounted(() => {
+  void props.state.loadEmbeddingConfig();
+});
 
 async function pickRootFolder(): Promise<void> {
   if (!isTauri || picking.value) return;
@@ -42,6 +47,16 @@ async function pickRootFolder(): Promise<void> {
     }
   } finally {
     picking.value = false;
+  }
+}
+
+async function saveEmbeddingConfig(): Promise<void> {
+  if (saving.value) return;
+  saving.value = true;
+  try {
+    await props.state.saveEmbeddingConfig();
+  } finally {
+    saving.value = false;
   }
 }
 </script>
@@ -96,6 +111,29 @@ async function pickRootFolder(): Promise<void> {
       <SettingRow label="Embedding 模型名" hint="如 text-embedding-3-small；留空使用 Provider 默认值">
         <template #action>
           <TextField v-model="state.embeddingModel.value" placeholder="text-embedding-3-small" />
+        </template>
+      </SettingRow>
+
+      <SettingRow label="Embedding API Base URL" hint="OpenAI 兼容端点；留空使用 Provider 默认">
+        <template #action>
+          <TextField v-model="state.embeddingBaseUrl.value" placeholder="https://api.openai.com" />
+        </template>
+      </SettingRow>
+
+      <SettingRow label="Embedding API Key" hint="推送至本地服务端后从内存清除；不落盘">
+        <template #action>
+          <TextField
+            v-model="state.embeddingApiKey.value"
+            :placeholder="state.embeddingConfigured.value ? '已配置（留空保持不变）' : 'sk-...'"
+          />
+        </template>
+      </SettingRow>
+
+      <SettingRow label="保存 Embedding 配置" hint="推送至本地服务端并触发后台向量索引">
+        <template #action>
+          <button type="button" class="btn-ghost" :disabled="saving" @click="saveEmbeddingConfig">
+            保存配置
+          </button>
         </template>
       </SettingRow>
 

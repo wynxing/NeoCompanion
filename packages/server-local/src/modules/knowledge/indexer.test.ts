@@ -69,20 +69,20 @@ describe.skipIf(!isSqliteAvailable())("knowledge indexer (FTS5)", () => {
     const database = createDatabase(":memory:");
     const store = createKnowledgeStore(database);
     const service = createKnowledgeService(store);
-    const status = service.indexStatus(false, false);
+    const status = service.indexStatus();
     expect(status.mode).toBe("fts-only");
     expect(status.vectorExtensionAvailable).toBe(false);
     database.close();
   });
 
-  it("reindexAll walks every project", () => {
+  it("reindexAll walks every project", async () => {
     const database = createDatabase(":memory:");
     const store = createKnowledgeStore(database);
     const service = createKnowledgeService(store);
     const p = store.createProject({ title: "P" });
     store.createNote(p.id, "笔记一");
     store.createTask(p.id, "", "任务一");
-    const counts = service.reindexAll();
+    const counts = await service.reindexAll();
     expect(counts.notes).toBe(1);
     expect(counts.tasks).toBe(1);
     database.close();

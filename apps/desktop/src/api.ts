@@ -1,5 +1,37 @@
-import type { ChatMessage, FocusSession, Task, TtsResult, WeatherSummary, WsMessage } from "@neo-companion/shared";
+import type {
+  AiAnswer,
+  AiRetrievalMode,
+  ChatMessage,
+  ContextLevel,
+  FocusSession,
+  IndexStatus,
+  KnowledgeSource,
+  Task,
+  TtsResult,
+  WeatherSummary,
+  WsMessage
+} from "@neo-companion/shared";
 import type { BoardColumn, KnowledgeNote, KnowledgeProject, KnowledgeTask, TaskStatus } from "./composables/useKnowledgeMock";
+
+export interface EmbeddingConfigInput {
+  provider: string;
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+}
+export interface EmbeddingConfigStatus {
+  provider: string;
+  baseUrl: string;
+  model: string;
+  configured: boolean;
+}
+export interface AiChatRequest {
+  message: string;
+  mode?: AiRetrievalMode;
+  projectId?: string | null;
+  context?: { notes: Record<string, ContextLevel>; tasks: Record<string, ContextLevel> };
+  conversationId?: string;
+}
 
 export const API_BASE = import.meta.env.VITE_NEO_SERVER_URL ?? "http://127.0.0.1:10103";
 export const WS_BASE = API_BASE.replace(/^http/, "ws");
@@ -32,6 +64,8 @@ export const api = {
   completeFocus: (id: string) => request<FocusSession>(`/api/focus/${id}/complete`, { method: "POST" }),
   weather: () => request<WeatherSummary>("/api/weather"),
   chat: (message: string) => request<{ text: string }>("/api/ai/chat", { method: "POST", body: JSON.stringify({ message }) }),
+  aiChat: (req: AiChatRequest) =>
+    request<AiAnswer>("/api/ai/chat", { method: "POST", body: JSON.stringify(req) }),
   speak: (text: string, style?: string) =>
     request<TtsResult>("/api/tts/speak", { method: "POST", body: JSON.stringify({ text, style }) }),
 
@@ -81,7 +115,18 @@ export const api = {
   knowledgeMirrorExport: (path?: string) =>
     request<{ projects: number; notes: number; columns: number; tasks: number }>("/api/knowledge/mirror/export", { method: "POST", body: JSON.stringify({ path }) }),
   knowledgeMirrorImport: (path?: string) =>
-    request<{ importedProjects: number; importedNotes: number; importedColumns: number; importedTasks: number; skipped: number }>("/api/knowledge/mirror/import", { method: "POST", body: JSON.stringify({ path }) })
+    request<{ importedProjects: number; importedNotes: number; importedColumns: number; importedTasks: number; skipped: number }>("/api/knowledge/mirror/import", { method: "POST", body: JSON.stringify({ path }) }),
+
+  // ── Knowledge retrieval + embedding config (Phase 3) ──
+  knowledgeSearch: (query: string, projectId?: string | null, limit = 20) =>
+    request<KnowledgeSource[]>(`/api/knowledge/search?q=${encodeURIComponent(query)}${projectId ? `&projectId=${encodeURIComponent(projectId)}` : ""}&limit=${limit}`),
+  knowledgeIndexStatus: () => request<IndexStatus>("/api/knowledge/index-status"),
+  knowledgeReindex: (embeddingModel?: string) =>
+    request<{ notes: number; tasks: number }>("/api/knowledge/reindex", { method: "POST", body: JSON.stringify({ embeddingModel }) }),
+  knowledgeGetEmbeddingConfig: () =>
+    request<EmbeddingConfigStatus>("/api/knowledge/embedding-config"),
+  knowledgeSetEmbeddingConfig: (config: EmbeddingConfigInput) =>
+    request<{ ok: boolean }>("/api/knowledge/embedding-config", { method: "PUT", body: JSON.stringify(config) })
 };
 
 let activeWs: WebSocket | null = null;

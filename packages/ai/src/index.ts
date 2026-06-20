@@ -1,5 +1,8 @@
 import { DEFAULT_DEEPSEEK_MODEL, LEGACY_DEEPSEEK_MODELS, type ChatMessage } from "@neo-companion/shared";
 
+export { embedContents } from "./embedding";
+export type { EmbeddingOptions, EmbeddingResult } from "./embedding";
+
 export interface DeepSeekOptions {
   apiKey?: string;
   model?: string;
