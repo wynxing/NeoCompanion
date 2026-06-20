@@ -92,6 +92,10 @@ describe.skipIf(!SQLITE_AVAILABLE)("knowledge store", () => {
 });
 
 describe.skipIf(!SQLITE_AVAILABLE)("knowledge vector index", () => {
+  // Minimal chunk fn: one chunk per whole text (db test stays free of the
+  // server-local chunker). content-hash via a simple substring stamp.
+  const simpleChunk = (text: string) => [{ content: text, contentHash: `h-${text.length}` }];
+
   it("loads sqlite-vec, writes chunks, and returns KNN hits", () => {
     const database = createDatabase(":memory:");
     const kw = createKnowledgeStore(database);
@@ -102,14 +106,14 @@ describe.skipIf(!SQLITE_AVAILABLE)("knowledge vector index", () => {
 
     const project = kw.createProject({ title: "P" });
     const note = kw.createNote(project.id, "向量化笔记");
-    kw.updateNote(note.id, { body: "sqlite-vec 向量检索" });
+    const updated = kw.updateNote(note.id, { body: "sqlite-vec 向量检索" })!;
+    // updateNote does not auto-reindex; reindex explicitly to produce chunks.
+    kw.reindexNote(updated, simpleChunk);
 
-    // simulate an embedded chunk: insert a pending chunk then put its vector
     const pending = kw.listPendingChunks(10);
     expect(pending.length).toBeGreaterThanOrEqual(1);
     const chunk = pending[0];
-    const vec = [0.1, 0.2, 0.3, 0.4];
-    kw.putVecChunk(chunk.id, vec);
+    kw.putVecChunk(chunk.id, [0.1, 0.2, 0.3, 0.4]);
     kw.markChunkIndexed(chunk.id, "test-embed", dim);
 
     const hits = kw.searchKnn([0.1, 0.2, 0.3, 0.4], 5, null);
@@ -126,10 +130,10 @@ describe.skipIf(!SQLITE_AVAILABLE)("knowledge vector index", () => {
 
     const a = kw.createProject({ title: "A" });
     const b = kw.createProject({ title: "B" });
-    const noteA = kw.createNote(a.id, "A 笔记");
-    kw.updateNote(noteA.id, { body: "内容 A" });
-    const noteB = kw.createNote(b.id, "B 笔记");
-    kw.updateNote(noteB.id, { body: "内容 B" });
+    const noteA = kw.updateNote(kw.createNote(a.id, "A 笔记").id, { body: "内容 A" })!;
+    const noteB = kw.updateNote(kw.createNote(b.id, "B 笔记").id, { body: "内容 B" })!;
+    kw.reindexNote(noteA, simpleChunk);
+    kw.reindexNote(noteB, simpleChunk);
 
     const pending = kw.listPendingChunks(20);
     for (const c of pending) {
@@ -147,7 +151,14 @@ describe.skipIf(!SQLITE_AVAILABLE)("knowledge vector index", () => {
     const kw = createKnowledgeStore(database);
     const vec = [0.1, 0.2, 0.3];
     kw.putCachedEmbedding("hash-1", vec, "test-embed", 3);
-    expect(kw.getCachedEmbedding("hash-1")).toEqual({ vector: vec, dimensions: 3 });
+    const got = kw.getCachedEmbedding("hash-1");
+    expect(got).not.toBeNull();
+    expect(got!.dimensions).toBe(3);
+    // Float32 round-trip introduces tiny error; compare approximately.
+    expect(got!.vector.length).toBe(3);
+    expect(got!.vector[0]).toBeCloseTo(0.1, 5);
+    expect(got!.vector[1]).toBeCloseTo(0.2, 5);
+    expect(got!.vector[2]).toBeCloseTo(0.3, 5);
     expect(kw.getCachedEmbedding("missing")).toBeNull();
     database.close();
   });
