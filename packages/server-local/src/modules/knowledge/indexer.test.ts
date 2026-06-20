@@ -65,13 +65,15 @@ describe.skipIf(!isSqliteAvailable())("knowledge indexer (FTS5)", () => {
     database.close();
   });
 
-  it("reports index status (fts-only when no vector ext)", () => {
+  it("reports fts-only mode when no embedding provider is configured", () => {
     const database = createDatabase(":memory:");
     const store = createKnowledgeStore(database);
+    // No embedding config injected → providerConfigured=false → fts-only,
+    // regardless of whether the vec extension itself loaded.
     const service = createKnowledgeService(store);
     const status = service.indexStatus();
     expect(status.mode).toBe("fts-only");
-    expect(status.vectorExtensionAvailable).toBe(false);
+    expect(status.providerConfigured).toBe(false);
     database.close();
   });
 
