@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { ContextLevel, KnowledgeNote, KnowledgeTask } from "@neo-companion/shared";
-import { buildChatBlocks, estimateTokens, packContext, summarizeNote, WEIGHTS, type ContextBlock } from "./context";
+import { buildAskBlocks, buildChatBlocks, estimateTokens, packContext, summarizeNote, WEIGHTS, type ContextBlock } from "./context";
 
 function note(id: string, title: string, body: string): KnowledgeNote {
   return { id, projectId: "p", title, body, tags: [], createdAt: 0, updatedAt: 0 };
 }
 
 describe("context assembly", () => {
+  it("uses full retrieved chunk content for Ask blocks", () => {
+    const source = { sourceType: "note" as const, sourceId: "n1", projectId: "p1", title: "T", excerpt: "short", chunkId: "c1" };
+    const blocks = buildAskBlocks([source], new Map([["c1", "full chunk content"]]));
+    expect(blocks[0].content).toBe("full chunk content");
+  });
   it("summarizes a note to its first section", () => {
     const n = note("n1", "标题", "首段内容。\n\n## 第二节\n更多内容。");
     expect(summarizeNote(n)).toBe("首段内容。");

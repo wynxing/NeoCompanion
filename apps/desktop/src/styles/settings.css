@@ -459,6 +459,19 @@
   cursor: default;
 }
 
+.knowledge-mirror-status {
+  margin: -4px 0 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: right;
+  text-wrap: pretty;
+}
+
+.knowledge-mirror-status.is-error {
+  color: var(--danger);
+}
+
 .settings-root .toggle {
   width: 44px;
   height: 26px;

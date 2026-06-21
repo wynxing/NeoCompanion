@@ -115,6 +115,14 @@ export interface ImportStats {
   importedColumns: number;
   importedTasks: number;
   skipped: number;
+  reindexedNotes: number;
+  reindexedTasks: number;
+  errors: string[];
+}
+
+export interface ImportHooks {
+  noteChanged?: (note: KnowledgeNote) => void;
+  taskChanged?: (task: KnowledgeTask) => void;
 }
 
 /**
@@ -122,11 +130,15 @@ export interface ImportStats {
  * by `updatedAt`. Creates projects/notes/columns/tasks that exist on disk but
  * not in SQLite; updates those whose file `updatedAt` is newer.
  */
-export async function importFromDir(store: KnowledgeStore, rootPath: string): Promise<ImportStats> {
-  const stats: ImportStats = { importedProjects: 0, importedNotes: 0, importedColumns: 0, importedTasks: 0, skipped: 0 };
+export async function importFromDir(store: KnowledgeStore, rootPath: string, hooks: ImportHooks = {}): Promise<ImportStats> {
+  const stats: ImportStats = {
+    importedProjects: 0, importedNotes: 0, importedColumns: 0, importedTasks: 0,
+    skipped: 0, reindexedNotes: 0, reindexedTasks: 0, errors: []
+  };
 
   const projectFolders = await collectProjectFolders(rootPath);
   for (const folder of projectFolders) {
+    try {
     const meta = await readJsonOptional<ProjectMeta>(path.join(folder, NEO_DIR, "project.json"));
     if (!meta) {
       stats.skipped += 1;
@@ -135,17 +147,12 @@ export async function importFromDir(store: KnowledgeStore, rootPath: string): Pr
 
     const existing = store.getProject(meta.id);
     if (!existing || meta.updatedAt > existing.updatedAt) {
-      const input = {
-        title: meta.title,
-        parentId: meta.parentId,
-        description: meta.description,
-        color: meta.color,
-        icon: meta.icon,
-        isInbox: meta.isInbox,
-        order: meta.order
-      };
-      if (existing) store.updateProject(meta.id, input);
-      else store.createProject({ ...input, title: meta.title });
+      store.runInTransaction(() => store.upsertImportedProject({
+          id: meta.id, title: meta.title, parentId: meta.parentId,
+          description: meta.description, color: meta.color, icon: meta.icon,
+          isInbox: meta.isInbox, order: meta.order,
+          createdAt: meta.createdAt, updatedAt: meta.updatedAt
+        }));
       stats.importedProjects += 1;
     }
 
@@ -168,13 +175,11 @@ export async function importFromDir(store: KnowledgeStore, rootPath: string): Pr
           createdAt: fm.createdAt,
           updatedAt: fm.updatedAt
         };
-        if (existingNote) store.updateNote(fm.id, { title: noteInput.title, body: noteInput.body, tags: noteInput.tags });
-        else {
-          // create then patch body/tags (store.createNote only takes title)
-          const created = store.createNote(meta.id, fm.title);
-          store.updateNote(created.id, { body: noteInput.body, tags: noteInput.tags });
-          // note: created.id differs from fm.id; for v1 we accept re-id on import-create
-        }
+        store.runInTransaction(() => {
+          store.upsertImportedNote(noteInput);
+          hooks.noteChanged?.(noteInput);
+        });
+        stats.reindexedNotes += 1;
         stats.importedNotes += 1;
       }
     }
@@ -185,8 +190,7 @@ export async function importFromDir(store: KnowledgeStore, rootPath: string): Pr
       for (const col of fromJsonl<KnowledgeBoardColumn>(columnsText)) {
         const existingCol = store.columnsForProject(meta.id).find((c) => c.id === col.id);
         if (!existingCol || col.order !== existingCol.order || col.title !== existingCol.title || col.status !== existingCol.status) {
-          if (existingCol) store.updateColumn(col.id, { title: col.title, status: col.status, order: col.order });
-          else store.createColumn(meta.id, { title: col.title, status: col.status, order: col.order });
+          store.runInTransaction(() => store.upsertImportedColumn({ ...col, projectId: meta.id }));
           stats.importedColumns += 1;
         }
       }
@@ -198,28 +202,18 @@ export async function importFromDir(store: KnowledgeStore, rootPath: string): Pr
       for (const task of fromJsonl<KnowledgeTask>(tasksText)) {
         const existingTask = store.tasksForProject(meta.id).find((t) => t.id === task.id);
         if (!existingTask || task.updatedAt > existingTask.updatedAt) {
-          if (existingTask) {
-            store.updateTask(task.id, {
-              title: task.title,
-              description: task.description,
-              status: task.status,
-              columnId: task.columnId,
-              order: task.order,
-              linkedNoteId: task.linkedNoteId ?? null
-            });
-          } else {
-            const created = store.createTask(meta.id, task.columnId || "", task.title);
-            store.updateTask(created.id, {
-              description: task.description,
-              status: task.status,
-              columnId: task.columnId,
-              order: task.order,
-              linkedNoteId: task.linkedNoteId ?? null
-            });
-          }
+          const importedTask = { ...task, projectId: meta.id };
+          store.runInTransaction(() => {
+            store.upsertImportedTask(importedTask);
+            hooks.taskChanged?.(importedTask);
+          });
+          stats.reindexedTasks += 1;
           stats.importedTasks += 1;
         }
       }
+    }
+    } catch (error) {
+      stats.errors.push(`${folder}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

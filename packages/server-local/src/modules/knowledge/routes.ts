@@ -10,6 +10,12 @@ import type { EmbeddingConfig, KnowledgeService } from "./service";
 export interface EmbeddingConfigController {
   get(): EmbeddingConfig;
   set(config: EmbeddingConfig): void;
+  getLegacySecret(): string | undefined;
+  clearLegacySecret(): void;
+}
+export interface RootPathController {
+  get(): string;
+  set(path: string): void;
 }
 
 /**
@@ -26,12 +32,13 @@ export function registerKnowledgeRoutes(
   app: FastifyInstance,
   store: KnowledgeStore | null,
   service: KnowledgeService | null,
-  embeddingConfigController?: EmbeddingConfigController
+  embeddingConfigController?: EmbeddingConfigController,
+  rootPathController?: RootPathController
 ) {
   // File-mirror root path. The frontend owns the canonical path in localStorage
   // (useSettings.knowledgeRootPath) and pushes it here so the sidecar can do
   // export/import. Empty until the user picks a folder.
-  let rootPath = "";
+  let rootPath = rootPathController?.get() ?? "";
 
   const requireStore = (reply: import("fastify").FastifyReply): KnowledgeStore | null => {
     if (!store) {
@@ -268,15 +275,28 @@ export function registerKnowledgeRoutes(
   // service falls back to the EMBEDDING_API_KEY env var.
   app.get("/api/knowledge/embedding-config", async () => {
     const cfg = embeddingConfigController?.get() ?? { provider: "none" };
-    const hasStoredKey = !!cfg.apiKey;
+    const hasRuntimeKey = !!cfg.apiKey;
+    const hasLegacyKey = !!embeddingConfigController?.getLegacySecret();
     const hasEnvKey = !!process.env.EMBEDDING_API_KEY;
     return {
       provider: cfg.provider,
       baseUrl: cfg.baseUrl ?? "",
       model: cfg.model ?? "",
-      configured: cfg.provider !== "none" && !!cfg.model && (hasStoredKey || hasEnvKey),
-      apiKeySource: hasStoredKey ? "stored" : hasEnvKey ? "env" : "none"
+      configured: cfg.provider !== "none" && !!cfg.model && (hasRuntimeKey || hasLegacyKey || hasEnvKey),
+      apiKeySource: hasLegacyKey ? "legacy" : cfg.apiKeySource === "keychain" ? "keychain" : hasEnvKey ? "env" : "none",
+      legacyMigrationRequired: hasLegacyKey
     };
+  });
+
+  app.post("/api/knowledge/embedding-config/legacy-secret/claim", async (request, reply) => {
+    const apiKey = embeddingConfigController?.getLegacySecret();
+    if (!apiKey) return reply.code(404).send({ error: "legacy secret not found" });
+    return { apiKey };
+  });
+
+  app.delete("/api/knowledge/embedding-config/legacy-secret", async (request, reply) => {
+    embeddingConfigController?.clearLegacySecret();
+    return reply.code(204).send();
   });
 
   app.put("/api/knowledge/embedding-config", async (request, reply) => {
@@ -298,7 +318,8 @@ export function registerKnowledgeRoutes(
       provider: body.provider ?? current.provider,
       baseUrl: body.baseUrl ?? current.baseUrl,
       apiKey,
-      model: body.model ?? current.model
+      model: body.model ?? current.model,
+      apiKeySource: body.apiKeySource ?? current.apiKeySource
     };
     embeddingConfigController.set(next);
     // model change → mark stale so chunks re-embed with the new model
@@ -315,6 +336,7 @@ export function registerKnowledgeRoutes(
   app.put("/api/knowledge/root-path", async (request, reply) => {
     const body = request.body as { path?: string };
     rootPath = (body.path ?? "").trim();
+    rootPathController?.set(rootPath);
     return { path: rootPath };
   });
 
@@ -334,7 +356,10 @@ export function registerKnowledgeRoutes(
     const body = (request.body as { path?: string } | null) ?? {};
     const source = (body.path ?? rootPath).trim();
     if (!source) return reply.code(400).send({ error: "rootPath not set" });
-    const stats = await importFromDir(kw, source);
+    const stats = await importFromDir(kw, source, {
+      noteChanged: (note) => service?.reindexNote(note),
+      taskChanged: (task) => service?.reindexTask(task)
+    });
     return stats;
   });
 }

@@ -12,18 +12,22 @@ import type {
   WsMessage
 } from "@neo-companion/shared";
 import type { BoardColumn, KnowledgeNote, KnowledgeProject, KnowledgeTask, TaskStatus } from "./composables/useKnowledgeMock";
+import { invoke } from "@tauri-apps/api/core";
 
 export interface EmbeddingConfigInput {
-  provider: string;
+  provider?: string;
   baseUrl?: string;
-  apiKey?: string;
+  apiKey?: string | null;
   model?: string;
+  apiKeySource?: "keychain" | "env" | "legacy" | "none";
 }
 export interface EmbeddingConfigStatus {
   provider: string;
   baseUrl: string;
   model: string;
   configured: boolean;
+  apiKeySource: "keychain" | "env" | "legacy" | "none";
+  legacyMigrationRequired: boolean;
 }
 export interface AiChatRequest {
   message: string;
@@ -37,10 +41,12 @@ export const API_BASE = import.meta.env.VITE_NEO_SERVER_URL ?? "http://127.0.0.1
 export const WS_BASE = API_BASE.replace(/^http/, "ws");
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = await getAuthToken();
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
       ...options?.headers
     }
   });
@@ -50,7 +56,23 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(body.error ?? response.statusText);
   }
 
+  if (response.status === 204) return undefined as T;
+
   return response.json() as Promise<T>;
+}
+
+let authTokenPromise: Promise<string> | null = null;
+function getAuthToken(): Promise<string> {
+  if (!authTokenPromise) {
+    const envToken = import.meta.env.VITE_NEO_AUTH_TOKEN as string | undefined;
+    const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    authTokenPromise = isTauri
+      ? invoke<string>("get_app_auth_token")
+      : envToken
+        ? Promise.resolve(envToken)
+        : Promise.reject(new Error("VITE_NEO_AUTH_TOKEN is required"));
+  }
+  return authTokenPromise;
 }
 
 export const api = {
@@ -115,7 +137,7 @@ export const api = {
   knowledgeMirrorExport: (path?: string) =>
     request<{ projects: number; notes: number; columns: number; tasks: number }>("/api/knowledge/mirror/export", { method: "POST", body: JSON.stringify({ path }) }),
   knowledgeMirrorImport: (path?: string) =>
-    request<{ importedProjects: number; importedNotes: number; importedColumns: number; importedTasks: number; skipped: number }>("/api/knowledge/mirror/import", { method: "POST", body: JSON.stringify({ path }) }),
+    request<{ importedProjects: number; importedNotes: number; importedColumns: number; importedTasks: number; skipped: number; reindexedNotes: number; reindexedTasks: number; errors: string[] }>("/api/knowledge/mirror/import", { method: "POST", body: JSON.stringify({ path }) }),
 
   // ── Knowledge retrieval + embedding config (Phase 3) ──
   knowledgeSearch: (query: string, projectId?: string | null, limit = 20) =>
@@ -126,25 +148,54 @@ export const api = {
   knowledgeGetEmbeddingConfig: () =>
     request<EmbeddingConfigStatus>("/api/knowledge/embedding-config"),
   knowledgeSetEmbeddingConfig: (config: EmbeddingConfigInput) =>
-    request<{ ok: boolean }>("/api/knowledge/embedding-config", { method: "PUT", body: JSON.stringify(config) })
+    request<{ ok: boolean }>("/api/knowledge/embedding-config", { method: "PUT", body: JSON.stringify(config) }),
+  knowledgeClaimLegacyEmbeddingSecret: () =>
+    request<{ apiKey: string }>("/api/knowledge/embedding-config/legacy-secret/claim", { method: "POST" }),
+  knowledgeClearLegacyEmbeddingSecret: () =>
+    request<void>("/api/knowledge/embedding-config/legacy-secret", { method: "DELETE" })
 };
+
+/** Hydrate the sidecar's in-memory embedding secret from the OS keychain. */
+export async function bootstrapEmbeddingSecret(): Promise<void> {
+  const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  if (!isTauri) return;
+  const status = await api.knowledgeGetEmbeddingConfig();
+  if (status.legacyMigrationRequired) {
+    const legacy = await api.knowledgeClaimLegacyEmbeddingSecret();
+    await invoke("set_embedding_api_key", { apiKey: legacy.apiKey });
+    await api.knowledgeSetEmbeddingConfig({ apiKey: legacy.apiKey, apiKeySource: "keychain" });
+    await api.knowledgeClearLegacyEmbeddingSecret();
+    return;
+  }
+  const stored = await invoke<string | null>("get_embedding_api_key");
+  if (stored) await api.knowledgeSetEmbeddingConfig({ apiKey: stored, apiKeySource: "keychain" });
+}
 
 let activeWs: WebSocket | null = null;
 
 export function connectWs(onMessage: (message: WsMessage) => void) {
-  const ws = new WebSocket(`${WS_BASE}/ws`);
-  activeWs = ws;
-  ws.addEventListener("message", (event) => {
-    onMessage(JSON.parse(event.data) as WsMessage);
+  let ws: WebSocket | null = null;
+  let heartbeat: number | null = null;
+  let cancelled = false;
+  void getAuthToken().then((token) => {
+    if (cancelled) return;
+    ws = new WebSocket(`${WS_BASE}/ws`, ["neo-companion", `auth.${token}`]);
+    activeWs = ws;
+    ws.addEventListener("message", (event) => {
+      onMessage(JSON.parse(event.data) as WsMessage);
+    });
+    heartbeat = window.setInterval(() => {
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
+    }, 30000);
+  }).catch((error: unknown) => {
+    onMessage({ type: "ai:error", payload: { message: error instanceof Error ? error.message : "authentication failed" } });
   });
-  const heartbeat = window.setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
-  }, 30000);
 
   return () => {
-    window.clearInterval(heartbeat);
+    cancelled = true;
+    if (heartbeat !== null) window.clearInterval(heartbeat);
     activeWs = null;
-    ws.close();
+    ws?.close();
   };
 }
 

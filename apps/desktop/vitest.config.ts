@@ -5,6 +5,9 @@ import { defineConfig } from "vitest/config";
 // dev/build pipelines stay lean and only tests load jsdom.
 export default defineConfig({
   plugins: [vue()],
+  define: {
+    "import.meta.env.VITE_NEO_AUTH_TOKEN": JSON.stringify("test-token"),
+  },
   test: {
     environment: "jsdom",
     setupFiles: ["./tests/setup.ts"],

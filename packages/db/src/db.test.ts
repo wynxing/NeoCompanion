@@ -113,7 +113,7 @@ describe.skipIf(!SQLITE_AVAILABLE)("knowledge vector index", () => {
     const pending = kw.listPendingChunks(10);
     expect(pending.length).toBeGreaterThanOrEqual(1);
     const chunk = pending[0];
-    kw.putVecChunk(chunk.id, [0.1, 0.2, 0.3, 0.4]);
+    kw.putVecChunk(chunk.id, chunk.projectId, [0.1, 0.2, 0.3, 0.4]);
     kw.markChunkIndexed(chunk.id, "test-embed", dim);
 
     const hits = kw.searchKnn([0.1, 0.2, 0.3, 0.4], 5, null);
@@ -137,7 +137,7 @@ describe.skipIf(!SQLITE_AVAILABLE)("knowledge vector index", () => {
 
     const pending = kw.listPendingChunks(20);
     for (const c of pending) {
-      kw.putVecChunk(c.id, [0.5, 0.5]);
+      kw.putVecChunk(c.id, c.projectId, [0.5, 0.5]);
       kw.markChunkIndexed(c.id, "test-embed", 2);
     }
 
@@ -151,7 +151,7 @@ describe.skipIf(!SQLITE_AVAILABLE)("knowledge vector index", () => {
     const kw = createKnowledgeStore(database);
     const vec = [0.1, 0.2, 0.3];
     kw.putCachedEmbedding("hash-1", vec, "test-embed", 3);
-    const got = kw.getCachedEmbedding("hash-1");
+    const got = kw.getCachedEmbedding("hash-1", "test-embed");
     expect(got).not.toBeNull();
     expect(got!.dimensions).toBe(3);
     // Float32 round-trip introduces tiny error; compare approximately.
@@ -159,7 +159,61 @@ describe.skipIf(!SQLITE_AVAILABLE)("knowledge vector index", () => {
     expect(got!.vector[0]).toBeCloseTo(0.1, 5);
     expect(got!.vector[1]).toBeCloseTo(0.2, 5);
     expect(got!.vector[2]).toBeCloseTo(0.3, 5);
-    expect(kw.getCachedEmbedding("missing")).toBeNull();
+    expect(kw.getCachedEmbedding("missing", "test-embed")).toBeNull();
+    database.close();
+  });
+
+  it("restores vector table dimensions when the store is recreated", () => {
+    const database = createDatabase(":memory:");
+    const first = createKnowledgeStore(database);
+    first.ensureVecTable(2);
+    const project = first.createProject({ title: "P" });
+    const note = first.createNote(project.id, "restart vector content");
+    first.reindexNote(note, simpleChunk);
+    const chunk = first.listPendingChunks(1)[0];
+    first.putVecChunk(chunk.id, project.id, [0.2, 0.8]);
+    first.markChunkIndexed(chunk.id, "model", 2);
+    const reopened = createKnowledgeStore(database);
+    expect(reopened.searchKnn([0.2, 0.8], 5, project.id)[0].sourceId).toBe(note.id);
+    database.close();
+  });
+
+  it("keeps embedding caches isolated by model", () => {
+    const database = createDatabase(":memory:");
+    const kw = createKnowledgeStore(database);
+    kw.putCachedEmbedding("same-content", [1, 0], "model-a", 2);
+    expect(kw.getCachedEmbedding("same-content", "model-a")).not.toBeNull();
+    expect(kw.getCachedEmbedding("same-content", "model-b")).toBeNull();
+    database.close();
+  });
+
+  it("marks vectors from a different model stale", () => {
+    const database = createDatabase(":memory:");
+    if (database.kind !== "sqlite") throw new Error("sqlite required");
+    const kw = createKnowledgeStore(database);
+    const project = kw.createProject({ title: "P" });
+    const note = kw.createNote(project.id, "model migration content");
+    kw.reindexNote(note, simpleChunk);
+    const chunk = kw.listPendingChunks(1)[0];
+    kw.markChunkIndexed(chunk.id, "model-a", 2);
+    kw.markStale("model-b");
+    expect((database.sqlite.prepare("SELECT index_status FROM knowledge_chunks WHERE id = ?").get(chunk.id) as { index_status: string }).index_status).toBe("stale");
+    database.close();
+  });
+
+  it("returns real chunk ids and removes all index rows on delete", () => {
+    const database = createDatabase(":memory:");
+    if (database.kind !== "sqlite") throw new Error("sqlite required");
+    const kw = createKnowledgeStore(database);
+    const project = kw.createProject({ title: "P" });
+    const note = kw.updateNote(kw.createNote(project.id, "Delete me").id, { body: "unique deletion sentinel" })!;
+    kw.reindexNote(note, simpleChunk);
+    const actual = database.sqlite.prepare("SELECT id FROM knowledge_chunks WHERE source_id = ?").get(note.id) as { id: string };
+    const hit = kw.searchFts(project.id, "deletion sentinel", 5)[0];
+    expect(hit.chunkId).toBe(actual.id);
+    kw.deleteNote(note.id);
+    expect(kw.searchFts(project.id, "deletion sentinel", 5)).toEqual([]);
+    expect(database.sqlite.prepare("SELECT COUNT(*) AS n FROM knowledge_chunks_fts WHERE source_id = ?").get(note.id)).toEqual({ n: 0 });
     database.close();
   });
 });

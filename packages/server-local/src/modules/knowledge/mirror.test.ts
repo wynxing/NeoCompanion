@@ -23,6 +23,7 @@ function createFakeStore(): KnowledgeStore {
   const now = () => Date.now();
 
   const store: KnowledgeStore = {
+    runInTransaction: (operation) => operation(),
     listProjects: () => [...projects.values()].sort((a, b) => a.order - b.order),
     getProject: (i) => projects.get(i) ?? null,
     childProjects: (pid) => [...projects.values()].filter((p) => p.parentId === pid).sort((a, b) => a.order - b.order),
@@ -40,6 +41,7 @@ function createFakeStore(): KnowledgeStore {
       };
       projects.set(p.id, p); return p;
     },
+    upsertImportedProject: (p) => { projects.set(p.id, { ...p }); },
     updateProject: (i, patch) => {
       const ex = projects.get(i); if (!ex) return null;
       const next: KnowledgeProject = { ...ex, ...patch, updatedAt: now() };
@@ -56,6 +58,7 @@ function createFakeStore(): KnowledgeStore {
       const n: KnowledgeNote = { id: id(), projectId: pid, title: title || "无标题", body: "", tags: [], createdAt: now(), updatedAt: now() };
       notes.set(n.id, n); return n;
     },
+    upsertImportedNote: (n) => { notes.set(n.id, { ...n }); },
     updateNote: (i, patch) => {
       const ex = notes.get(i); if (!ex) return null;
       const next: KnowledgeNote = { ...ex, ...patch, updatedAt: now() };
@@ -68,6 +71,7 @@ function createFakeStore(): KnowledgeStore {
       const c: KnowledgeBoardColumn = { id: id(), projectId: pid, title: input.title, status: input.status, order: input.order };
       columns.set(c.id, c); return c;
     },
+    upsertImportedColumn: (c) => { columns.set(c.id, { ...c }); },
     updateColumn: (i, patch) => {
       const ex = columns.get(i); if (!ex) return null;
       const next = { ...ex, ...patch };
@@ -79,6 +83,7 @@ function createFakeStore(): KnowledgeStore {
       const t: KnowledgeTask = { id: id(), projectId: pid, columnId, title, status: "todo", order: 0, tags: [], createdAt: now(), updatedAt: now() };
       tasks.set(t.id, t); return t;
     },
+    upsertImportedTask: (t) => { tasks.set(t.id, { ...t }); },
     updateTask: (i, patch) => {
       const ex = tasks.get(i); if (!ex) return null;
       const next: KnowledgeTask = {
@@ -99,9 +104,10 @@ function createFakeStore(): KnowledgeStore {
     reindexTask: () => {},
     removeIndex: () => {},
     searchFts: () => [],
+    getChunkContents: () => new Map(),
     markStale: () => {},
     getIndexStatus: () => ({
-      mode: "fts-only" as const, pending: 0, failed: 0, stale: 0,
+      mode: "fts-only" as const, pending: 0, failed: 0, stale: 0, retrying: 0,
       providerConfigured: false, vectorExtensionAvailable: false
     }),
     vecLoaded: false,
@@ -167,5 +173,10 @@ describe("knowledge file mirror", () => {
     expect(stats.importedProjects).toBe(1);
     expect(target.listProjects()[0].title).toBe("导入项目");
     expect(target.notesForProject(project.id)).toHaveLength(1);
+    expect(target.notesForProject(project.id)[0].id).toBe(note.id);
+
+    const second = await importFromDir(target, dir);
+    expect(second.importedProjects).toBe(0);
+    expect(second.importedNotes).toBe(0);
   });
 });

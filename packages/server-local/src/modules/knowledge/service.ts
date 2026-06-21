@@ -9,6 +9,7 @@ export interface EmbeddingConfig {
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  apiKeySource?: "keychain" | "env" | "legacy" | "none";
 }
 
 export interface EmbeddingCallOptions {
@@ -62,6 +63,15 @@ export function createKnowledgeService(store: KnowledgeStore, options: Knowledge
   }
 
   let draining = false;
+  let retryTimer: NodeJS.Timeout | null = null;
+  function scheduleRetry(): void {
+    if (retryTimer) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void drainEmbeddingQueue();
+    }, 60_000);
+    retryTimer.unref();
+  }
   /**
    * Consume pending/stale chunks: embed in batches (with content-hash cache
    * reuse), write vectors into vec0, mark indexed/failed. Single-flight via the
@@ -81,7 +91,7 @@ export function createKnowledgeService(store: KnowledgeStore, options: Knowledge
         const cached: Array<{ chunk: (typeof pending)[number]; emb: { vector: number[]; dimensions: number } }> = [];
         const need: Array<{ chunk: (typeof pending)[number]; idx: number }> = [];
         for (const chunk of pending) {
-          const hit = store.getCachedEmbedding(chunk.contentHash);
+          const hit = store.getCachedEmbedding(chunk.contentHash, model);
           if (hit) cached.push({ chunk, emb: hit });
           else need.push({ chunk, idx: need.length });
         }
@@ -101,13 +111,14 @@ export function createKnowledgeService(store: KnowledgeStore, options: Knowledge
                 store.markChunkFailed(n.chunk.id, "embedding dimension mismatch");
                 continue;
               }
-              store.putVecChunk(n.chunk.id, v);
+              store.putVecChunk(n.chunk.id, n.chunk.projectId, v);
               store.putCachedEmbedding(n.chunk.contentHash, v, model, dim);
               store.markChunkIndexed(n.chunk.id, model, dim);
             }
           } catch (error) {
             const msg = error instanceof Error ? error.message : "embedding failed";
             for (const n of need) store.markChunkFailed(n.chunk.id, msg);
+            scheduleRetry();
             break; // avoid tight retry loop; next write/reindex re-triggers
           }
         }
@@ -115,7 +126,7 @@ export function createKnowledgeService(store: KnowledgeStore, options: Knowledge
         for (const c of cached) {
           if (dim === null) dim = c.emb.dimensions;
           if (!store.ensureVecTable(dim)) break;
-          store.putVecChunk(c.chunk.id, c.emb.vector);
+          store.putVecChunk(c.chunk.id, c.chunk.projectId, c.emb.vector);
           store.markChunkIndexed(c.chunk.id, model, dim);
         }
       }
@@ -153,7 +164,7 @@ export function createKnowledgeService(store: KnowledgeStore, options: Knowledge
         if (!queryVec) return fts;
         const knn = store.searchKnn(queryVec, limit, projectId);
         if (!knn.length) return fts;
-        return fuseRrf(fts, knn);
+        return fuseRrf(fts, knn).slice(0, Math.max(1, Math.min(limit, 50)));
       } catch {
         return fts;
       }
@@ -161,6 +172,10 @@ export function createKnowledgeService(store: KnowledgeStore, options: Knowledge
 
     indexStatus(): IndexStatus {
       return store.getIndexStatus(providerConfigured());
+    },
+
+    getChunkContents(chunkIds: string[]): Map<string, string> {
+      return store.getChunkContents(chunkIds);
     },
 
     markStale(embeddingModel?: string): void {

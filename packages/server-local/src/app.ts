@@ -1,6 +1,7 @@
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
+import { timingSafeEqual } from "node:crypto";
 import { streamDeepSeekChat, embedContents } from "@neo-companion/ai";
 import { createAiConversationStore, createDatabase, createKnowledgeStore, createTaskStore, createWindowEventStore, getAppConfig, setAppConfig, type AiConversationStore, type KnowledgeStore, type NeoDatabase } from "@neo-companion/db";
 import type { ChatMessage, CompanionFeedback, TtsResult } from "@neo-companion/shared";
@@ -22,9 +23,13 @@ export interface AppDependencies {
   windowSnapshot?: typeof getActiveWindowSnapshot;
   startBackground?: boolean;
   hookManager?: ReturnType<typeof createHookManager>;
+  /** Shared bearer token. Tests inject this; production reads APP_AUTH_TOKEN. */
+  authToken?: string;
 }
 
 export async function createApp(dependencies: AppDependencies = {}) {
+  const authToken = dependencies.authToken ?? process.env.APP_AUTH_TOKEN;
+  if (!authToken) throw new Error("APP_AUTH_TOKEN is required");
   const database = dependencies.database ?? createDatabase();
   const taskStore = createTaskStore(database);
   const windowStore = createWindowEventStore(database);
@@ -45,15 +50,27 @@ export async function createApp(dependencies: AppDependencies = {}) {
       return { provider: "none" };
     }
   };
-  let embeddingConfig: EmbeddingConfig =
-    database.kind === "sqlite" ? parseConfig(getAppConfig(database, EMBEDDING_CONFIG_KEY)) : { provider: "none" };
+  const loadedEmbeddingConfig = database.kind === "sqlite" ? parseConfig(getAppConfig(database, EMBEDDING_CONFIG_KEY)) : { provider: "none" };
+  let legacyEmbeddingApiKey = loadedEmbeddingConfig.apiKey;
+  let runtimeEmbeddingApiKey: string | undefined;
+  let embeddingConfig: EmbeddingConfig = { ...loadedEmbeddingConfig, apiKey: undefined };
+  const persistEmbeddingConfig = () => {
+    if (database.kind !== "sqlite") return;
+    const persisted = { ...embeddingConfig, apiKey: legacyEmbeddingApiKey };
+    if (!legacyEmbeddingApiKey) delete persisted.apiKey;
+    setAppConfig(database, EMBEDDING_CONFIG_KEY, JSON.stringify(persisted));
+  };
   const embeddingConfigController = {
-    get: () => embeddingConfig,
+    get: () => ({ ...embeddingConfig, apiKey: runtimeEmbeddingApiKey ?? legacyEmbeddingApiKey }),
     set: (next: EmbeddingConfig) => {
-      embeddingConfig = next;
-      if (database.kind === "sqlite") {
-        setAppConfig(database, EMBEDDING_CONFIG_KEY, JSON.stringify(next));
-      }
+      runtimeEmbeddingApiKey = next.apiKey;
+      embeddingConfig = { ...next, apiKey: undefined };
+      persistEmbeddingConfig();
+    },
+    getLegacySecret: () => legacyEmbeddingApiKey,
+    clearLegacySecret: () => {
+      legacyEmbeddingApiKey = undefined;
+      persistEmbeddingConfig();
     }
   };
   const knowledgeService: KnowledgeService | null = knowledgeStore
@@ -62,6 +79,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
         getEmbeddingConfig: embeddingConfigController.get
       })
     : null;
+  void knowledgeService?.drainEmbeddings();
   const hub = new WsHub();
   const app = Fastify({ logger: true });
   const aiStream = dependencies.aiStream ?? ((messages) => streamDeepSeekChat(messages));
@@ -76,8 +94,57 @@ export async function createApp(dependencies: AppDependencies = {}) {
   const ttsSpeak = dependencies.ttsSpeak ?? ((text, style) => speakWithMimo(text, style));
   const windowSnapshot = dependencies.windowSnapshot ?? getActiveWindowSnapshot;
 
-  await app.register(cors, { origin: true });
+  const allowedOrigins = new Set([
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "http://127.0.0.1:5173",
+    ...(process.env.NEO_ALLOWED_ORIGINS ?? "").split(",").map((v) => v.trim()).filter(Boolean)
+  ]);
+  await app.register(cors, {
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.has(origin)) callback(null, true);
+      else callback(null, false);
+    }
+  });
   await app.register(websocket);
+
+  const tokenMatches = (candidate: string | undefined): boolean => {
+    if (!candidate) return false;
+    const expected = Buffer.from(authToken);
+    const actual = Buffer.from(candidate);
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
+  };
+  const ROOT_PATH_KEY = "knowledge.rootPath";
+  let knowledgeRootPath = database.kind === "sqlite" ? (getAppConfig(database, ROOT_PATH_KEY) ?? "") : "";
+  const rootPathController = {
+    get: () => knowledgeRootPath,
+    set: (path: string) => {
+      knowledgeRootPath = path;
+      if (database.kind === "sqlite") setAppConfig(database, ROOT_PATH_KEY, path);
+    }
+  };
+
+  app.addHook("onRequest", async (request, reply) => {
+    const rawHost = request.headers.host ?? "";
+    const host = rawHost.startsWith("[") ? rawHost.slice(1, rawHost.indexOf("]")) : rawHost.split(":")[0];
+    if (!new Set(["127.0.0.1", "localhost", "::1"]).has(host)) {
+      return reply.code(403).send({ error: "host not allowed" });
+    }
+    const origin = request.headers.origin;
+    if (origin && !allowedOrigins.has(origin)) {
+      return reply.code(403).send({ error: "origin not allowed" });
+    }
+    if (request.method === "OPTIONS") return;
+    const bearer = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    const protocols = String(request.headers["sec-websocket-protocol"] ?? "")
+      .split(",")
+      .map((value) => value.trim());
+    const wsToken = protocols.find((value) => value.startsWith("auth."))?.slice(5);
+    if (!tokenMatches(bearer) && !tokenMatches(wsToken)) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+  });
 
   const focus = createFocusManager(database, {
     onTick(payload) {
@@ -137,7 +204,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
     return task;
   });
 
-  registerKnowledgeRoutes(app, knowledgeStore, knowledgeService, embeddingConfigController);
+  registerKnowledgeRoutes(app, knowledgeStore, knowledgeService, embeddingConfigController, rootPathController);
 
   app.post("/api/focus/start", async (request) => {
     const body = request.body as { taskId?: string | null; durationMinutes?: number };

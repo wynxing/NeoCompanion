@@ -35,6 +35,7 @@ const rootPathDisplay = computed(() => props.state.knowledgeRootPath.value || "�
 
 onMounted(() => {
   void props.state.loadEmbeddingConfig();
+  void props.state.loadKnowledgeRootPath();
 });
 
 async function pickRootFolder(): Promise<void> {
@@ -43,7 +44,7 @@ async function pickRootFolder(): Promise<void> {
   try {
     const selected = await open({ directory: true, multiple: false });
     if (typeof selected === "string" && selected) {
-      props.state.setKnowledgeRootPath(selected);
+      await props.state.setKnowledgeRootPath(selected);
     }
   } finally {
     picking.value = false;
@@ -79,7 +80,7 @@ async function saveEmbeddingConfig(): Promise<void> {
 
       <SettingRow
         label="知识库根目录"
-        hint="笔记与索引数据的存放根目录（阶段 0 仅记录路径，文件化存储将在 v2 接入）"
+        hint="Markdown 文件镜像的根目录；SQLite 仍是业务数据与索引的主存储"
       >
         <template #action>
           <div class="knowledge-root-action">
@@ -102,6 +103,28 @@ async function saveEmbeddingConfig(): Promise<void> {
         </template>
       </SettingRow>
 
+      <SettingRow label="文件镜像" hint="SQLite 为主存储；手动导入或导出 Markdown 镜像，不同步文件删除">
+        <template #action>
+          <div class="knowledge-root-action">
+            <button type="button" class="btn-ghost" :disabled="state.knowledgeMirrorBusy.value || !state.knowledgeRootPath.value" @click="state.importKnowledgeMirror">
+              导入
+            </button>
+            <button type="button" class="btn-ghost" :disabled="state.knowledgeMirrorBusy.value || !state.knowledgeRootPath.value" @click="state.exportKnowledgeMirror">
+              导出
+            </button>
+          </div>
+        </template>
+      </SettingRow>
+
+      <p
+        v-if="state.knowledgeMirrorMessage.value"
+        class="knowledge-mirror-status"
+        :class="{ 'is-error': state.knowledgeMirrorError.value }"
+        role="status"
+      >
+        {{ state.knowledgeMirrorMessage.value }}
+      </p>
+
       <SettingRow label="Embedding Provider" hint="未配置时 AI 检索退化为仅 FTS5 全文搜索；笔记与看板始终可用">
         <template #action>
           <SelectField v-model="state.embeddingProvider.value" :options="providerOptions" />
@@ -120,7 +143,7 @@ async function saveEmbeddingConfig(): Promise<void> {
         </template>
       </SettingRow>
 
-      <SettingRow label="Embedding API Key" hint="推送至本地服务端后从内存清除；不落盘">
+      <SettingRow label="Embedding API Key" hint="由系统钥匙链保存；Sidecar 仅在进程内存中使用">
         <template #action>
           <TextField
             v-model="state.embeddingApiKey.value"

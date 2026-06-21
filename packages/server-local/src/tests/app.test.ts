@@ -1,4 +1,4 @@
-import { createDatabase } from "@neo-companion/db";
+import { createDatabase, getAppConfig, type NeoDatabase } from "@neo-companion/db";
 import type { ChatMessage } from "@neo-companion/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
@@ -7,10 +7,13 @@ import type { AddressInfo } from "node:net";
 import { createApp } from "../app";
 
 let app: FastifyInstance;
+let database: NeoDatabase;
 
 beforeEach(async () => {
+  database = createDatabase(":memory:");
   app = await createApp({
-    database: createDatabase(":memory:"),
+    authToken: "test-token",
+    database,
     startBackground: false,
     aiStream: async function* (_messages: ChatMessage[]) {
       yield "你好，";
@@ -19,6 +22,13 @@ beforeEach(async () => {
     ttsSpeak: async () => ({ audioUrl: "data:audio/mp3;base64,AA==", format: "mp3", provider: "mimo", cached: false }),
     weather: async () => ({ city: "Beijing", temperatureC: 20, precipitationChance: 0, text: "北京现在约 20°C。" })
   });
+  const rawInject = app.inject.bind(app);
+  app.inject = ((options: any) => rawInject(
+    typeof options === "string" ? options : {
+      ...options,
+      headers: { authorization: "Bearer test-token", ...options.headers }
+    }
+  )) as typeof app.inject;
   await app.listen({ port: 0, host: "127.0.0.1" });
 });
 
@@ -27,6 +37,19 @@ afterEach(async () => {
 });
 
 describe("server app", () => {
+  it("persists root path but never persists a new embedding secret", async () => {
+    await app.inject({ method: "PUT", url: "/api/knowledge/root-path", payload: { path: "D:/notes" } });
+    expect((await app.inject({ method: "GET", url: "/api/knowledge/root-path" })).json()).toEqual({ path: "D:/notes" });
+
+    await app.inject({
+      method: "PUT",
+      url: "/api/knowledge/embedding-config",
+      payload: { provider: "openai", model: "embed-model", apiKey: "secret-value", apiKeySource: "keychain" }
+    });
+    expect(getAppConfig(database, "embedding")).not.toContain("secret-value");
+    const status = (await app.inject({ method: "GET", url: "/api/knowledge/embedding-config" })).json();
+    expect(status.apiKeySource).toBe("keychain");
+  });
   it("serves health and task CRUD", async () => {
     const health = await app.inject({ method: "GET", url: "/health" });
     expect(health.statusCode).toBe(200);
@@ -51,7 +74,7 @@ describe("server app", () => {
   it("streams AI chunks through websocket and returns final text", async () => {
     const received: string[] = [];
     const address = app.server.address() as AddressInfo;
-    const ws = new WebSocket(`ws://127.0.0.1:${address.port}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${address.port}/ws`, ["neo-companion", "auth.test-token"]);
     await new Promise<void>((resolve) => ws.once("open", () => resolve()));
     ws.on("message", (data: Buffer) => {
       const message = JSON.parse(data.toString()) as { type: string; payload: { chunk?: string } };

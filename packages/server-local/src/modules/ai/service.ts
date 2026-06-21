@@ -53,14 +53,14 @@ export function createAiService(deps: AiServiceDeps) {
   }
 
   /** Plain fallback chat (no knowledge context), preserving existing behavior. */
-  async function plainChat(message: string): Promise<AiAnswer> {
+  async function plainChat(message: string, retrievalMode: AiRetrievalMode = "chat"): Promise<AiAnswer> {
     const messages: ChatMessage[] = [
       { role: "system", content: DEFAULT_SYSTEM_PROMPT },
       { role: "user", content: message }
     ];
     hub.broadcast({ type: "companion:feedback", payload: { state: "thinking", text: "我想一想。", speak: false } });
     const text = await streamReply(messages);
-    const answer: AiAnswer = { text, sources: [], retrievalMode: "chat" };
+    const answer: AiAnswer = { text, sources: [], retrievalMode };
     hub.broadcast({ type: "ai:done", payload: answer });
     return answer;
   }
@@ -78,7 +78,7 @@ export function createAiService(deps: AiServiceDeps) {
     for (const [noteId, level] of Object.entries(ctx.notes)) {
       if (level === "excluded") continue;
       const note = knowledgeStore.getNote(noteId);
-      if (!note) continue;
+      if (!note || (req.projectId && note.projectId !== req.projectId)) continue;
       noteBlocks.push({
         type: "note",
         ref: note.id,
@@ -156,16 +156,16 @@ export function createAiService(deps: AiServiceDeps) {
   }
 
   async function handleAsk(req: AskRequest): Promise<AiAnswer> {
-    if (!knowledgeService || !req.projectId) return plainChat(req.message);
+    if (!knowledgeService || !req.projectId) return plainChat(req.message, "ask");
 
     const sources = await knowledgeService.searchHybrid(req.projectId, req.message, 8);
-    if (!sources.length) return plainChat(req.message);
+    if (!sources.length) return plainChat(req.message, "ask");
 
     const sourceLookup = new Map<string, KnowledgeSource>();
     sources.forEach((s) => sourceLookup.set(s.sourceId, s));
-    const blocks = buildAskBlocks(sources, new Map());
+    const blocks = buildAskBlocks(sources, knowledgeService.getChunkContents(sources.map((source) => source.chunkId)));
     const packed = packContext(blocks, CONTEXT_TOKEN_BUDGET);
-    if (!packed.ordered.length) return plainChat(req.message);
+    if (!packed.ordered.length) return plainChat(req.message, "ask");
 
     const injected = injectSources(packed.ordered);
     const validIds = new Set(injected.idToRef.keys());

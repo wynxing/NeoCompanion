@@ -226,6 +226,8 @@ export interface IndexStatus {
   pending: number;
   failed: number;
   stale: number;
+  /** Failed chunks currently eligible for automatic retry. */
+  retrying: number;
   providerConfigured: boolean;
   vectorExtensionAvailable: boolean;
   /** sqlite-vec version when loaded; absent when not loaded. */
