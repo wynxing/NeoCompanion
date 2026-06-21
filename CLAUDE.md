@@ -44,7 +44,8 @@ Vue 3 Frontend
 
 ## Current State Notes
 
-- The **knowledge workspace** UI exists but is backed by a front-end mock (`useKnowledgeMock.ts`). The real SQLite-backed API, FTS5 full-text search, and `sqlite-vec` vector retrieval described in the architecture doc are **planned for v2**, not yet implemented.
+- The **knowledge workspace** is backed by SQLite CRUD, transactional FTS5 indexing, optional `sqlite-vec` hybrid retrieval, file mirror import/export, and cited AI Ask/Chat flows. `useKnowledgeMock.ts` remains only as a preview fallback when the authenticated sidecar is unavailable.
+- Every Sidecar REST and WebSocket request requires the shared `APP_AUTH_TOKEN`; use the root `pnpm dev` / `pnpm dev:tauri` launchers so development processes receive the same ephemeral token.
 - The codebase still uses `pet`/`companion` identifiers in many places (`components/pet/`, `usePetState.ts`, `pet.css`). The product-facing terminology is **assistant**, but a full code-level rename is out of scope for documentation-only work.
 - The sidecar runs on `http://127.0.0.1:10103` by default (configurable via `NEO_SERVER_PORT`).
 

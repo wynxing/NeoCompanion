@@ -8,6 +8,16 @@ NeoCompanion sidecar 是一个本地 Fastify 应用，为 Vue 前端提供 REST 
 
 所有端点默认返回 JSON，除非另有说明。
 
+## 鉴权
+
+Sidecar 启动时必须配置 `APP_AUTH_TOKEN`。所有 REST（包括 `/health` 与 Hook API）使用：
+
+```http
+Authorization: Bearer <APP_AUTH_TOKEN>
+```
+
+WebSocket 通过 `Sec-WebSocket-Protocol` 同时发送 `neo-companion` 与 `auth.<APP_AUTH_TOKEN>`。缺少或错误 token 返回 `401`；非本地 Host 或不受信任 Origin 返回 `403`。根目录开发命令会为桌面端与 Sidecar 自动生成并注入同一个临时 token。
+
 ---
 
 ## 健康检查
@@ -389,6 +399,6 @@ sidecar 会广播以下消息类型：
 
 ## 说明
 
-- 知识工作空间后端端点（`/api/knowledge/*`）**已实现**：项目/笔记/看板列/任务的 CRUD、`GET /api/knowledge/search`（FTS5 + sqlite-vec 混合检索，参数 `q`/`projectId`/`limit`）、`GET /api/knowledge/index-status`、`POST /api/knowledge/reindex`、`GET/PUT /api/knowledge/embedding-config`（apiKey 不回显，落库持久化）、`GET/PUT /api/knowledge/root-path`、`POST /api/knowledge/mirror/export|import`。前端通过 `useKnowledgeApi` 接入，API 不可用时降级 mock 并显示 banner。详见 `docs/ARCHITECTURE.md` §9.3、§9.4。
+- 知识工作空间后端端点（`/api/knowledge/*`）**已实现**：项目/笔记/看板列/任务的 CRUD、`GET /api/knowledge/search`（FTS5 + sqlite-vec 混合检索，参数 `q`/`projectId`/`limit`）、`GET /api/knowledge/index-status`、`POST /api/knowledge/reindex`、`GET/PUT /api/knowledge/embedding-config`、`GET/PUT /api/knowledge/root-path`、`POST /api/knowledge/mirror/export|import`。Embedding API Key 只在系统钥匙链和 Sidecar 进程内存中存在；旧版 SQLite 明文密钥通过认证端点一次性迁移后删除。前端通过 `useKnowledgeApi` 接入，API 不可用时降级 mock 并显示 banner。详见 `docs/ARCHITECTURE.md` §9.3、§9.4。
 - 当前 v1 `/api/tasks` 使用 `status: "open" | "done"`。v2 知识工作空间用独立表 `knowledge_tasks`（四态 `"todo" | "doing" | "done" | "archived"`），与看板列绑定；两表统一为延后决策。
 - 错误响应格式通常为 `{ "error": "message" }`，除非另有说明。

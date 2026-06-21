@@ -148,7 +148,7 @@ NeoCompanion 的能力由浅入深分为四层：
 | 数据库 | **SQLite** (Drizzle ORM) |
 | AI | 聊天模型适配器 + OpenAI-compatible Embedding Adapter |
 
-架构核心：Tauri (Rust) 提供系统级能力 → Fastify (TypeScript) 处理业务逻辑与 AI 调度 → Vue 提供 UI → SQLite 统一存储业务数据。v2 计划引入 FTS5 全文索引与 sqlite-vec 向量索引，当前版本尚未实现。
+架构核心：Tauri (Rust) 提供系统级能力与系统钥匙链 → Fastify (TypeScript) 处理业务逻辑、知识索引与 AI 调度 → Vue 提供 UI → SQLite 统一存储业务数据。知识工作空间已接入 FTS5 全文索引、可选 sqlite-vec 混合检索、文件镜像与带来源的 RAG。
 
 详见 [**系统架构设计**](docs/ARCHITECTURE.md)。
 
