@@ -242,18 +242,38 @@ export function initSchema(sqlite: Database.Database) {
       sources_json TEXT,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS app_config (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 }
 
-/** Load the sqlite-vec extension into a connection. Never throws; returns loaded state. */
-export function loadVecExtension(database: NeoDatabase): { loaded: boolean; version?: string } {
-  if (database.kind !== "sqlite") return { loaded: false };
+/** Read a single app_config value (JSON string), or null when absent. */
+export function getAppConfig(database: NeoDatabase, key: string): string | null {
+  if (database.kind !== "sqlite") return null;
+  const row = database.sqlite.prepare("SELECT value FROM app_config WHERE key = ?").get(key) as { value?: string } | undefined;
+  return row?.value ?? null;
+}
+
+/** Write (upsert) a single app_config value. No-op on the memory fallback. */
+export function setAppConfig(database: NeoDatabase, key: string, value: string): void {
+  if (database.kind !== "sqlite") return;
+  database.sqlite
+    .prepare("INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+    .run(key, value, new Date().toISOString());
+}
+
+/** Load the sqlite-vec extension into a connection. Never throws; returns loaded state + error reason. */
+export function loadVecExtension(database: NeoDatabase): { loaded: boolean; version?: string; error?: string } {
+  if (database.kind !== "sqlite") return { loaded: false, error: "memory database (no native sqlite)" };
   try {
     sqliteVec.load(database.sqlite);
     const row = database.sqlite.prepare("SELECT vec_version() AS v").get() as { v?: string } | undefined;
     return { loaded: true, version: row?.v };
-  } catch {
-    return { loaded: false };
+  } catch (e) {
+    return { loaded: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -551,6 +571,8 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
   const { db, sqlite } = database;
   const vecState = loadVecExtension(database);
   let vecLoaded = vecState.loaded;
+  const vecVersion = vecState.version;
+  const vecLoadError = vecState.error;
   let vecDim: number | null = null;
 
   // ── tags helpers ──
@@ -1022,7 +1044,9 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
       failed: countBy("failed"),
       stale,
       providerConfigured,
-      vectorExtensionAvailable: vecLoaded
+      vectorExtensionAvailable: vecLoaded,
+      vecVersion,
+      vecLoadError: vecLoaded ? undefined : vecLoadError
     };
   }
 

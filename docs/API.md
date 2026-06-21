@@ -147,17 +147,35 @@ NeoCompanion sidecar 是一个本地 Fastify 应用，为 Vue 前端提供 REST 
 
 ```json
 {
-  "message": "接下来该做什么？"
+  "message": "向量检索怎么工作？",
+  "mode": "ask",
+  "projectId": "<可选，限定检索范围>",
+  "context": "可选，Chat 模式下手选条目与三级权限",
+  "conversationId": "可选，Chat 模式多轮续接"
 }
 ```
+
+`mode` 取值：
+
+- `ask` — RAG 自动检索（`searchHybrid`）相关分块作答，单次问答。
+- `chat` — 基于用户手选上下文（`context`）多轮对话，支持 `conversationId` 续接。
+
+`context`（Chat 模式）为数组，每项含条目 id、`contextLevel: "full" | "summary" | "excluded"`。
 
 **响应：**
 
 ```json
 {
-  "text": "要不要先查看未完成任务？"
+  "text": "知识库使用 sqlite-vec 做向量检索……",
+  "sources": [
+    { "sourceType": "note", "sourceId": "...", "projectId": "...", "title": "...", "excerpt": "...", "chunkId": "..." }
+  ],
+  "retrievalMode": "ask",
+  "conversationId": "可选，用于续接"
 }
 ```
+
+`sources` 由服务端根据实际召回/引用审计结果生成（模型输出无权新增，编造的引用 ID 会被剔除）。
 
 **请求过程中会广播以下 WebSocket 事件：**
 
@@ -371,6 +389,6 @@ sidecar 会广播以下消息类型：
 
 ## 说明
 
-- 知识工作空间相关的搜索端点（`/api/knowledge/*`）**尚未实现**。当前知识工作空间 UI 由前端 mock 驱动，但已具备可交互的卡片化项目浏览器、嵌套导航、笔记/看板/任务工作区、双向链接与 backlinks、看板拖拽排序和全局主题切换，用于验证 UX。
-- 当前 `/api/tasks` 使用 `status: "open" | "done"`。v2 知识工作空间将任务状态扩展为 `"todo" | "doing" | "done" | "archived"`，并与看板列绑定；迁移时需将旧任务映射到新状态与列。
+- 知识工作空间后端端点（`/api/knowledge/*`）**已实现**：项目/笔记/看板列/任务的 CRUD、`GET /api/knowledge/search`（FTS5 + sqlite-vec 混合检索，参数 `q`/`projectId`/`limit`）、`GET /api/knowledge/index-status`、`POST /api/knowledge/reindex`、`GET/PUT /api/knowledge/embedding-config`（apiKey 不回显，落库持久化）、`GET/PUT /api/knowledge/root-path`、`POST /api/knowledge/mirror/export|import`。前端通过 `useKnowledgeApi` 接入，API 不可用时降级 mock 并显示 banner。详见 `docs/ARCHITECTURE.md` §9.3、§9.4。
+- 当前 v1 `/api/tasks` 使用 `status: "open" | "done"`。v2 知识工作空间用独立表 `knowledge_tasks`（四态 `"todo" | "doing" | "done" | "archived"`），与看板列绑定；两表统一为延后决策。
 - 错误响应格式通常为 `{ "error": "message" }`，除非另有说明。

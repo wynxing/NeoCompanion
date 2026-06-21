@@ -150,7 +150,7 @@ export function createAiService(deps: AiServiceDeps) {
       conversationStore.appendMessage(conversationId, "assistant", audited.cleanedText, sources);
     }
 
-    const answer: AiAnswer = { text: audited.cleanedText, sources, retrievalMode: "chat" };
+    const answer: AiAnswer = { text: audited.cleanedText, sources, retrievalMode: "chat", conversationId };
     hub.broadcast({ type: "ai:done", payload: answer });
     return answer;
   }
@@ -189,13 +189,15 @@ export function createAiService(deps: AiServiceDeps) {
     const finalSources = buildSources(injected, audited.citedIds, sourceLookup);
 
     // Ask is one-shot; persist a single-turn conversation for history.
+    let askConversationId: string | undefined;
     if (conversationStore && req.projectId) {
       const conv = conversationStore.createConversation(req.projectId, "ask");
+      askConversationId = conv.id;
       conversationStore.appendMessage(conv.id, "user", req.message);
       conversationStore.appendMessage(conv.id, "assistant", audited.cleanedText, finalSources);
     }
 
-    const answer: AiAnswer = { text: audited.cleanedText, sources: finalSources, retrievalMode: "ask" };
+    const answer: AiAnswer = { text: audited.cleanedText, sources: finalSources, retrievalMode: "ask", conversationId: askConversationId };
     hub.broadcast({ type: "ai:done", payload: answer });
     return answer;
   }

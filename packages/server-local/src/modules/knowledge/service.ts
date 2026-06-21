@@ -47,13 +47,18 @@ export function createKnowledgeService(store: KnowledgeStore, options: Knowledge
   function embeddingConfig(): EmbeddingConfig | null {
     return getEmbeddingConfig?.() ?? null;
   }
+  /** Resolved API key: stored config value, else env EMBEDDING_API_KEY. */
+  function resolvedApiKey(): string | undefined {
+    const cfg = embeddingConfig();
+    return cfg?.apiKey || process.env.EMBEDDING_API_KEY || undefined;
+  }
   function providerConfigured(): boolean {
     const cfg = embeddingConfig();
-    return !!cfg && cfg.provider !== "none" && !!cfg.apiKey && !!cfg.model;
+    return !!cfg && cfg.provider !== "none" && !!cfg.model && !!resolvedApiKey();
   }
   function embedCallOptions(): EmbeddingCallOptions {
     const cfg = embeddingConfig() ?? { provider: "none" };
-    return { apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, model: cfg.model };
+    return { apiKey: resolvedApiKey(), baseUrl: cfg.baseUrl, model: cfg.model };
   }
 
   let draining = false;

@@ -228,6 +228,10 @@ export interface IndexStatus {
   stale: number;
   providerConfigured: boolean;
   vectorExtensionAvailable: boolean;
+  /** sqlite-vec version when loaded; absent when not loaded. */
+  vecVersion?: string;
+  /** Reason sqlite-vec failed to load, so the UI can surface silent degradation. */
+  vecLoadError?: string;
 }
 
 /** Simplified UI state consumed by IndexStatusDot. */
@@ -244,6 +248,8 @@ export interface AiAnswer {
   text: string;
   sources: KnowledgeSource[];
   retrievalMode: AiRetrievalMode;
+  /** Chat 模式下回传的会话 id，供前端续传多轮；降级/Ask-未续传时为 undefined。 */
+  conversationId?: string;
 }
 
 /** AI 多轮会话（Phase 4，与 v1 pet 对话表分离）。 */

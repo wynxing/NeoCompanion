@@ -6,7 +6,7 @@ import { computed, ref } from "vue";
  * 仍是纯前端 mock，不连 sidecar/WS，但数据模型与 docs/ARCHITECTURE.md 对齐。
  */
 
-export type KnowledgeViewTab = "notes" | "board" | "tasks" | "projects";
+export type KnowledgeViewTab = "notes" | "board" | "tasks" | "projects" | "ai";
 export type IndexStatus = "ok" | "fts_only" | "indexing";
 export type TaskStatus = "todo" | "doing" | "done" | "archived";
 
@@ -601,6 +601,7 @@ export const TAB_LABELS: Record<KnowledgeViewTab, string> = {
   board: "看板",
   tasks: "任务",
   projects: "子项目",
+  ai: "AI",
 };
 
 export const INDEX_STATUS_LABELS: Record<IndexStatus, string> = {

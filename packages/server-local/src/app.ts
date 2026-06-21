@@ -2,7 +2,7 @@ import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import { streamDeepSeekChat, embedContents } from "@neo-companion/ai";
-import { createAiConversationStore, createDatabase, createKnowledgeStore, createTaskStore, createWindowEventStore, type AiConversationStore, type KnowledgeStore, type NeoDatabase } from "@neo-companion/db";
+import { createAiConversationStore, createDatabase, createKnowledgeStore, createTaskStore, createWindowEventStore, getAppConfig, setAppConfig, type AiConversationStore, type KnowledgeStore, type NeoDatabase } from "@neo-companion/db";
 import type { ChatMessage, CompanionFeedback, TtsResult } from "@neo-companion/shared";
 import { speakWithMimo } from "@neo-companion/tts";
 import { createFocusManager } from "./services/focus-manager";
@@ -32,13 +32,28 @@ export async function createApp(dependencies: AppDependencies = {}) {
   // fallback is reachable (better-sqlite3 native binding unavailable). Routes
   // degrade to 503 in that case.
   const knowledgeStore: KnowledgeStore | null = database.kind === "sqlite" ? createKnowledgeStore(database) : null;
-  // Embedding provider config held in memory (pushed from the client via the
-  // /embedding-config route, like root-path). Survives for the process lifetime.
-  let embeddingConfig: EmbeddingConfig = { provider: "none" };
+  // Embedding provider config persisted to the app_config table so it survives
+  // sidecar restarts (apiKey lives only in the local db file, never in git).
+  // Falls back to an in-memory variable on the memory database.
+  const EMBEDDING_CONFIG_KEY = "embedding";
+  const parseConfig = (raw: string | null): EmbeddingConfig => {
+    if (!raw) return { provider: "none" };
+    try {
+      const parsed = JSON.parse(raw) as EmbeddingConfig;
+      return parsed && typeof parsed === "object" ? parsed : { provider: "none" };
+    } catch {
+      return { provider: "none" };
+    }
+  };
+  let embeddingConfig: EmbeddingConfig =
+    database.kind === "sqlite" ? parseConfig(getAppConfig(database, EMBEDDING_CONFIG_KEY)) : { provider: "none" };
   const embeddingConfigController = {
     get: () => embeddingConfig,
     set: (next: EmbeddingConfig) => {
       embeddingConfig = next;
+      if (database.kind === "sqlite") {
+        setAppConfig(database, EMBEDDING_CONFIG_KEY, JSON.stringify(next));
+      }
     }
   };
   const knowledgeService: KnowledgeService | null = knowledgeStore

@@ -263,15 +263,19 @@ export function registerKnowledgeRoutes(
   });
 
   // ── Embedding provider config (Phase 3) ──
-  // Server holds the config in memory (pushed from the client, like root-path);
-  // apiKey is never echoed back.
+  // Persisted to app_config (survives restart); apiKey lives only in the local
+  // db file and is never echoed back. apiKey is optional — when absent the
+  // service falls back to the EMBEDDING_API_KEY env var.
   app.get("/api/knowledge/embedding-config", async () => {
     const cfg = embeddingConfigController?.get() ?? { provider: "none" };
+    const hasStoredKey = !!cfg.apiKey;
+    const hasEnvKey = !!process.env.EMBEDDING_API_KEY;
     return {
       provider: cfg.provider,
       baseUrl: cfg.baseUrl ?? "",
       model: cfg.model ?? "",
-      configured: !!cfg.apiKey && cfg.provider !== "none"
+      configured: cfg.provider !== "none" && !!cfg.model && (hasStoredKey || hasEnvKey),
+      apiKeySource: hasStoredKey ? "stored" : hasEnvKey ? "env" : "none"
     };
   });
 
@@ -279,8 +283,17 @@ export function registerKnowledgeRoutes(
     if (!embeddingConfigController) return reply.code(503).send({ error: "embedding config unavailable" });
     const body = request.body as Partial<EmbeddingConfig>;
     const current = embeddingConfigController.get();
-    // empty apiKey on PUT means "keep existing" (UI masks the secret)
-    const apiKey = body.apiKey ? body.apiKey : current.apiKey;
+    // A non-empty apiKey overwrites the stored secret; an absent/empty apiKey
+    // keeps the existing stored key (UI masks the secret). To switch to env-var
+    // mode the client sends an explicit apiKey: null which clears the stored key.
+    let apiKey: string | undefined;
+    if (body.apiKey) {
+      apiKey = body.apiKey;
+    } else if (body.apiKey === null) {
+      apiKey = undefined; // clear stored key → fall back to env var
+    } else {
+      apiKey = current.apiKey;
+    }
     const next: EmbeddingConfig = {
       provider: body.provider ?? current.provider,
       baseUrl: body.baseUrl ?? current.baseUrl,

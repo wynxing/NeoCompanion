@@ -38,23 +38,24 @@
 
 ## 知识工作空间
 
-- **文件**：`apps/desktop/src/composables/useKnowledgeMock.ts`
-- **已交付（v3.3 UI）**：
+- **文件**：`apps/desktop/src/composables/useKnowledgeMock.ts`（现仅作开发/降级数据源）、`packages/server-local/src/modules/knowledge/`（后端）、`packages/db/src/index.ts`（存储）
+- **已交付（v3.3 UI + v2 后端 Phase 0–4）**：
   - 卡片化项目浏览器与嵌套项目导航。
-  - 项目工作区（笔记 / 看板 / 任务 / 子项目 tab）。
+  - 项目工作区（笔记 / 看板 / 任务 / 子项目 / AI tab）。
   - 按项目自定义看板列与原生 HTML5 拖拽排序。
   - 双向 wiki 链接 `[[目标]]` / `[[目标|显示文本]]` 与 backlinks 面板。
   - 底部快速创建条与全局 light/dark 主题切换。
-- **仍为 mock（v2 接入）**：
-  - 真正的后端端点（`/api/notes`、`/api/boards`、`/api/tasks`、`/api/knowledge/*`）。
-  - SQLite 持久化存储、FTS5 全文检索和 `sqlite-vec` 向量检索。
-- **另见**：`docs/ARCHITECTURE.md` §1.2 Document Scope
+  - 后端 SQLite CRUD + 混合文件镜像（Obsidian 友好 Markdown/JSONL）。
+  - FTS5 全文检索（trigram，支持 CJK）、`sqlite-vec` 向量检索 + RRF 融合。
+  - Embedding Adapter（OpenAI 兼容，配置落库 + 环境变量双通道）。
+  - AI Chat/Ask 双模式 + 三级上下文权限 + 引用审计反幻觉 + 多轮会话持久化。
+  - 前端通过 `useKnowledgeApi` 接入真实 API，API 不可用时自动降级 mock 并显示 banner。
+- **另见**：`docs/ARCHITECTURE.md` §1.2 Document Scope、§9.3 向量与混合检索、§9.4 AI Chat/Ask 双模式与引用审计。
 
 ### 数据模型与迁移待对齐项
 
-- **项目/看板字段名**：`docs/ARCHITECTURE.md` §9.2 原 schema 使用 `projects.name` / `boards.name`，但 v3.3 前端 mock 与 UI 已统一使用 `title`。v2 后端实现时需以 `title` 为准，并在首次迁移中处理。
-- **任务状态枚举**：现有 `tasks.status` 为 `'open' | 'done'`，v3.3 看板工作流为 `'todo' | 'doing' | 'done' | 'archived'`。v2 迁移需将旧任务状态映射到看板列与新枚举。
-- **看板列默认值**：v3.3 中各项目可拥有不同的看板列（如“待办/进行中/已完成/归档”或“待调研/已整理”）。v2 首次迁移需为项目创建默认列，并支持自定义列持久化。
+- **任务状态枚举（延后决策）**：现有 v1 `tasks.status` 为 `'open' | 'done'`（驱动 pet 面板/focus），v2 `knowledge_tasks` 为四态 `'todo' | 'doing' | 'done' | 'archived'`。统一枚举是行为变更，暂延后；knowledge 用独立表 `knowledge_tasks`。
+- **看板列默认值**：v2 首次迁移需为项目创建默认列，并支持自定义列持久化。
 
 ## 如何更新本清单
 
