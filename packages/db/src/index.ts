@@ -1,7 +1,11 @@
 import Database from "better-sqlite3";
+import * as sqliteVec from "sqlite-vec";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { and, eq, like, asc } from "drizzle-orm";
+import { and, eq, like, asc, inArray, ne, or, isNull, lt, lte } from "drizzle-orm";
 import type {
+  AiConversation,
+  AiMessage,
+  AiRetrievalMode,
   FocusSession,
   IndexStatus,
   KnowledgeBoardColumn,
@@ -14,6 +18,8 @@ import type {
   WindowSnapshot
 } from "@neo-companion/shared";
 import {
+  aiConversations,
+  aiMessages,
   focusSessions,
   knowledgeBoardColumns,
   knowledgeChunks,
@@ -22,6 +28,7 @@ import {
   knowledgeProjects,
   knowledgeTags,
   knowledgeTasks,
+  embeddingCache,
   tasks,
   windowEvents
 } from "./schema";
@@ -197,11 +204,14 @@ export function initSchema(sqlite: Database.Database) {
       embedding_dimensions INTEGER,
       index_status TEXT NOT NULL DEFAULT 'pending',
       index_error TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      next_retry_at TEXT,
       updated_at TEXT NOT NULL
     );
 
     -- FTS5 mirror of chunk content for full-text search (works without sqlite-vec).
     CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
+      chunk_id UNINDEXED,
       content,
       project_id UNINDEXED,
       source_type UNINDEXED,
@@ -209,7 +219,135 @@ export function initSchema(sqlite: Database.Database) {
       content_hash UNINDEXED,
       tokenize = 'trigram'
     );
+
+    -- Embedding cache (Phase 3): same content_hash → reuse stored vector.
+    CREATE TABLE IF NOT EXISTS embedding_cache (
+      content_hash TEXT NOT NULL,
+      embedding BLOB NOT NULL,
+      model TEXT NOT NULL,
+      dimensions INTEGER NOT NULL,
+      PRIMARY KEY (content_hash, model)
+    );
+
+    -- AI conversations (Phase 4), separate from v1 pet conversations.
+    CREATE TABLE IF NOT EXISTS ai_conversations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      mode TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ai_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      sources_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS app_config (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    );
   `);
+  runSchemaMigrations(sqlite);
+}
+
+function runSchemaMigrations(sqlite: Database.Database): void {
+  const applied = new Set((sqlite.prepare("SELECT version FROM schema_migrations").all() as Array<{ version: number }>).map((r) => r.version));
+  const apply = (version: number, migrate: () => void) => {
+    if (applied.has(version)) return;
+    sqlite.transaction(() => {
+      migrate();
+      sqlite.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)").run(version, new Date().toISOString());
+    })();
+  };
+
+  apply(1, () => {
+    const columns = sqlite.prepare("PRAGMA table_info(embedding_cache)").all() as Array<{ name: string; pk: number }>;
+    const composite = columns.filter((c) => c.pk > 0).length === 2;
+    if (!composite) {
+      sqlite.exec(`
+        CREATE TABLE embedding_cache_v2 (
+          content_hash TEXT NOT NULL,
+          embedding BLOB NOT NULL,
+          model TEXT NOT NULL,
+          dimensions INTEGER NOT NULL,
+          PRIMARY KEY (content_hash, model)
+        );
+        INSERT OR REPLACE INTO embedding_cache_v2 SELECT content_hash, embedding, model, dimensions FROM embedding_cache;
+        DROP TABLE embedding_cache;
+        ALTER TABLE embedding_cache_v2 RENAME TO embedding_cache;
+      `);
+    }
+  });
+  apply(2, () => {
+    const names = new Set((sqlite.prepare("PRAGMA table_info(knowledge_chunks)").all() as Array<{ name: string }>).map((c) => c.name));
+    if (!names.has("retry_count")) sqlite.exec("ALTER TABLE knowledge_chunks ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0");
+    if (!names.has("next_retry_at")) sqlite.exec("ALTER TABLE knowledge_chunks ADD COLUMN next_retry_at TEXT");
+  });
+  apply(3, () => {
+    const sql = (sqlite.prepare("SELECT sql FROM sqlite_master WHERE name = 'knowledge_chunks_fts'").get() as { sql?: string } | undefined)?.sql ?? "";
+    if (!/chunk_id/i.test(sql)) {
+      sqlite.exec(`
+        DROP TABLE IF EXISTS knowledge_chunks_fts;
+        CREATE VIRTUAL TABLE knowledge_chunks_fts USING fts5(
+          chunk_id UNINDEXED,
+          content,
+          project_id UNINDEXED,
+          source_type UNINDEXED,
+          source_id UNINDEXED,
+          content_hash UNINDEXED,
+          tokenize = 'trigram'
+        );
+        INSERT INTO knowledge_chunks_fts (chunk_id, content, project_id, source_type, source_id, content_hash)
+          SELECT id, content, project_id, source_type, source_id, content_hash FROM knowledge_chunks;
+      `);
+    }
+  });
+}
+
+/** Read a single app_config value (JSON string), or null when absent. */
+export function getAppConfig(database: NeoDatabase, key: string): string | null {
+  if (database.kind !== "sqlite") return null;
+  const row = database.sqlite.prepare("SELECT value FROM app_config WHERE key = ?").get(key) as { value?: string } | undefined;
+  return row?.value ?? null;
+}
+
+/** Write (upsert) a single app_config value. No-op on the memory fallback. */
+export function setAppConfig(database: NeoDatabase, key: string, value: string): void {
+  if (database.kind !== "sqlite") return;
+  database.sqlite
+    .prepare("INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+    .run(key, value, new Date().toISOString());
+}
+
+/** Load the sqlite-vec extension into a connection. Never throws; returns loaded state + error reason. */
+export function loadVecExtension(database: NeoDatabase): { loaded: boolean; version?: string; error?: string } {
+  if (database.kind !== "sqlite") return { loaded: false, error: "memory database (no native sqlite)" };
+  try {
+    sqliteVec.load(database.sqlite);
+    const row = database.sqlite.prepare("SELECT vec_version() AS v").get() as { v?: string } | undefined;
+    return { loaded: true, version: row?.v };
+  } catch (e) {
+    return { loaded: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** Serialize a vector for better-sqlite3 BLOB binding (Float32 little-endian). */
+export function toVecBuffer(vec: number[]): Buffer {
+  return Buffer.from(new Float32Array(vec).buffer);
+}
+
+/** Deserialize a stored BLOB back to a number[]. */
+function bufferToVec(buf: Buffer | Uint8Array): number[] {
+  return Array.from(new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4));
 }
 
 export function createTaskStore(database: NeoDatabase) {
@@ -433,12 +571,14 @@ function toFocusRow(session: FocusSession): typeof focusSessions.$inferInsert {
 // branch) — memory callers get an explicit error.
 
 export interface KnowledgeStore {
+  runInTransaction<T>(operation: () => T): T;
   // Projects
   listProjects(): KnowledgeProject[];
   getProject(id: string): KnowledgeProject | null;
   childProjects(parentId: string): KnowledgeProject[];
   projectPath(id: string): KnowledgeProject[];
   createProject(input: { title: string; parentId?: string | null; description?: string; color?: string; icon?: string; isInbox?: boolean; order?: number }): KnowledgeProject;
+  upsertImportedProject(project: KnowledgeProject): void;
   updateProject(id: string, patch: Partial<Pick<KnowledgeProject, "title" | "description" | "color" | "icon" | "parentId" | "order">>): KnowledgeProject | null;
   deleteProject(id: string): void;
   ensureInbox(): KnowledgeProject;
@@ -446,17 +586,20 @@ export interface KnowledgeStore {
   notesForProject(projectId: string): KnowledgeNote[];
   getNote(id: string): KnowledgeNote | null;
   createNote(projectId: string, title: string): KnowledgeNote;
+  upsertImportedNote(note: KnowledgeNote): void;
   updateNote(id: string, patch: Partial<Pick<KnowledgeNote, "title" | "body" | "tags">>): KnowledgeNote | null;
   deleteNote(id: string): void;
   backlinksFor(targetId: string): { sourceType: "note" | "task"; sourceId: string }[];
   // Board columns
   columnsForProject(projectId: string): KnowledgeBoardColumn[];
   createColumn(projectId: string, input: { title: string; status: KnowledgeTaskStatus; order: number }): KnowledgeBoardColumn;
+  upsertImportedColumn(column: KnowledgeBoardColumn): void;
   updateColumn(id: string, patch: Partial<Pick<KnowledgeBoardColumn, "title" | "status" | "order">>): KnowledgeBoardColumn | null;
   deleteColumn(id: string): void;
   // Tasks
   tasksForProject(projectId: string): KnowledgeTask[];
   createTask(projectId: string, columnId: string, title: string): KnowledgeTask;
+  upsertImportedTask(task: KnowledgeTask): void;
   updateTask(id: string, patch: { title?: string; description?: string; status?: KnowledgeTaskStatus; columnId?: string; order?: number; linkedNoteId?: string | null }): KnowledgeTask | null;
   deleteTask(id: string): void;
   moveTask(taskId: string, targetColumnId: string, targetIndex: number): void;
@@ -466,8 +609,22 @@ export interface KnowledgeStore {
   reindexTask(task: KnowledgeTask, chunk: (text: string) => { content: string; contentHash: string }[]): void;
   removeIndex(sourceType: "note" | "task", sourceId: string): void;
   searchFts(projectId: string | null, query: string, limit: number): KnowledgeSource[];
+  getChunkContents(chunkIds: string[]): Map<string, string>;
   markStale(embeddingModel?: string): void;
-  getIndexStatus(providerConfigured: boolean, vectorExtensionAvailable: boolean): IndexStatus;
+  getIndexStatus(providerConfigured: boolean): IndexStatus;
+  // Vector indexing (Phase 3). vecLoaded reflects whether sqlite-vec loaded.
+  vecLoaded: boolean;
+  ensureVecTable(dim: number): boolean;
+  searchKnn(queryVec: number[], k: number, projectId: string | null): KnowledgeSource[];
+  putVecChunk(chunkId: string, projectId: string, vec: number[]): void;
+  delVecChunk(chunkId: string): void;
+  getCachedEmbedding(contentHash: string, model: string): { vector: number[]; dimensions: number } | null;
+  putCachedEmbedding(contentHash: string, vec: number[], model: string, dim: number): void;
+  listPendingChunks(limit: number): Array<{
+    id: string; content: string; contentHash: string; projectId: string; sourceType: "note" | "task"; sourceId: string;
+  }>;
+  markChunkIndexed(chunkId: string, model: string, dim: number): void;
+  markChunkFailed(chunkId: string, error: string): void;
 }
 
 function isoToMs(iso: string | null): number {
@@ -481,6 +638,28 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     throw new Error("Knowledge store requires a sqlite database (memory fallback unsupported)");
   }
   const { db, sqlite } = database;
+  const vecState = loadVecExtension(database);
+  let vecLoaded = vecState.loaded;
+  const vecVersion = vecState.version;
+  const vecLoadError = vecState.error;
+  let vecDim: number | null = null;
+  if (vecLoaded) {
+    const existingSql = (sqlite.prepare("SELECT sql FROM sqlite_master WHERE name = 'knowledge_chunks_vec'").get() as { sql?: string } | undefined)?.sql;
+    if (existingSql) {
+      const existingDim = Number(existingSql.match(/FLOAT\[(\d+)\]/i)?.[1]);
+      const hasPartition = /project_id\s+TEXT\s+PARTITION\s+KEY/i.test(existingSql);
+      if (Number.isFinite(existingDim) && hasPartition) {
+        vecDim = existingDim;
+      } else {
+        sqlite.exec("DROP TABLE knowledge_chunks_vec");
+        sqlite.prepare("UPDATE knowledge_chunks SET index_status = 'stale' WHERE index_status = 'indexed'").run();
+      }
+    }
+  }
+
+  function runInTransaction<T>(operation: () => T): T {
+    return sqlite.transaction(operation)();
+  }
 
   // ── tags helpers ──
   function ensureTagIds(names: string[]): string[] {
@@ -615,6 +794,18 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     }).run();
     return getProject(id)!;
   }
+  function upsertImportedProject(project: KnowledgeProject): void {
+    db.insert(knowledgeProjects).values({
+      id: project.id, title: project.title, description: project.description ?? null,
+      parentId: project.parentId, color: project.color ?? null, icon: project.icon ?? null,
+      isInbox: project.isInbox ?? false, order: project.order,
+      createdAt: new Date(project.createdAt).toISOString(), updatedAt: new Date(project.updatedAt).toISOString()
+    }).onConflictDoUpdate({ target: knowledgeProjects.id, set: {
+      title: project.title, description: project.description ?? null, parentId: project.parentId,
+      color: project.color ?? null, icon: project.icon ?? null, isInbox: project.isInbox ?? false,
+      order: project.order, updatedAt: new Date(project.updatedAt).toISOString()
+    }}).run();
+  }
   function updateProject(id: string, patch: Partial<Pick<KnowledgeProject, "title" | "description" | "color" | "icon" | "parentId" | "order">>): KnowledgeProject | null {
     const existing = db.select().from(knowledgeProjects).where(eq(knowledgeProjects.id, id)).get();
     if (!existing) return null;
@@ -630,12 +821,28 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     return getProject(id);
   }
   function deleteProject(id: string): void {
-    // cascade: notes (→ tags), columns, tasks, chunks
-    db.delete(knowledgeNotes).where(eq(knowledgeNotes.projectId, id)).run();
-    db.delete(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.projectId, id)).run();
-    db.delete(knowledgeTasks).where(eq(knowledgeTasks.projectId, id)).run();
-    db.delete(knowledgeChunks).where(eq(knowledgeChunks.projectId, id)).run();
-    db.delete(knowledgeProjects).where(eq(knowledgeProjects.id, id)).run();
+    sqlite.transaction(() => {
+      const projectIds: string[] = [];
+      const visited = new Set<string>();
+      const collect = (projectId: string) => {
+        if (visited.has(projectId)) return;
+        visited.add(projectId);
+        for (const child of childProjects(projectId)) collect(child.id);
+        projectIds.push(projectId);
+      };
+      collect(id);
+      for (const projectId of projectIds) {
+        for (const note of notesForProject(projectId)) {
+          removeIndex("note", note.id);
+          db.delete(knowledgeNoteTags).where(eq(knowledgeNoteTags.noteId, note.id)).run();
+        }
+        for (const task of tasksForProject(projectId)) removeIndex("task", task.id);
+        db.delete(knowledgeNotes).where(eq(knowledgeNotes.projectId, projectId)).run();
+        db.delete(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.projectId, projectId)).run();
+        db.delete(knowledgeTasks).where(eq(knowledgeTasks.projectId, projectId)).run();
+        db.delete(knowledgeProjects).where(eq(knowledgeProjects.id, projectId)).run();
+      }
+    })();
   }
   function ensureInbox(): KnowledgeProject {
     const existing = db.select().from(knowledgeProjects).where(eq(knowledgeProjects.isInbox, true)).get();
@@ -664,6 +871,16 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     }).run();
     return getNote(id)!;
   }
+  function upsertImportedNote(note: KnowledgeNote): void {
+    db.insert(knowledgeNotes).values({
+      id: note.id, projectId: note.projectId, title: note.title, body: note.body,
+      createdAt: new Date(note.createdAt).toISOString(), updatedAt: new Date(note.updatedAt).toISOString()
+    }).onConflictDoUpdate({ target: knowledgeNotes.id, set: {
+      projectId: note.projectId, title: note.title, body: note.body,
+      updatedAt: new Date(note.updatedAt).toISOString()
+    }}).run();
+    syncNoteTags(note.id, note.tags);
+  }
   function updateNote(id: string, patch: Partial<Pick<KnowledgeNote, "title" | "body" | "tags">>): KnowledgeNote | null {
     const existing = db.select().from(knowledgeNotes).where(eq(knowledgeNotes.id, id)).get();
     if (!existing) return null;
@@ -676,9 +893,11 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     return getNote(id);
   }
   function deleteNote(id: string): void {
-    db.delete(knowledgeNoteTags).where(eq(knowledgeNoteTags.noteId, id)).run();
-    db.delete(knowledgeNotes).where(eq(knowledgeNotes.id, id)).run();
-    db.delete(knowledgeChunks).where(eq(knowledgeChunks.sourceId, id)).run();
+    sqlite.transaction(() => {
+      removeIndex("note", id);
+      db.delete(knowledgeNoteTags).where(eq(knowledgeNoteTags.noteId, id)).run();
+      db.delete(knowledgeNotes).where(eq(knowledgeNotes.id, id)).run();
+    })();
   }
   function backlinksFor(targetId: string): { sourceType: "note" | "task"; sourceId: string }[] {
     // Basic [[target]] scan; upgraded to FTS in Phase 2.
@@ -701,6 +920,14 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     db.insert(knowledgeBoardColumns).values({ id, projectId, title: input.title.trim(), status: input.status, order: input.order }).run();
     const row = db.select().from(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.id, id)).get();
     return rowToColumn(row!);
+  }
+  function upsertImportedColumn(column: KnowledgeBoardColumn): void {
+    db.insert(knowledgeBoardColumns).values({
+      id: column.id, projectId: column.projectId, title: column.title,
+      status: column.status, order: column.order
+    }).onConflictDoUpdate({ target: knowledgeBoardColumns.id, set: {
+      projectId: column.projectId, title: column.title, status: column.status, order: column.order
+    }}).run();
   }
   function updateColumn(id: string, patch: Partial<Pick<KnowledgeBoardColumn, "title" | "status" | "order">>): KnowledgeBoardColumn | null {
     const existing = db.select().from(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.id, id)).get();
@@ -739,6 +966,18 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     }).run();
     return rowToTask(db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, id)).get()!);
   }
+  function upsertImportedTask(task: KnowledgeTask): void {
+    db.insert(knowledgeTasks).values({
+      id: task.id, projectId: task.projectId, columnId: task.columnId || null,
+      title: task.title, description: task.description ?? null, status: task.status,
+      order: task.order, linkedNoteId: task.linkedNoteId ?? null,
+      createdAt: new Date(task.createdAt).toISOString(), updatedAt: new Date(task.updatedAt).toISOString()
+    }).onConflictDoUpdate({ target: knowledgeTasks.id, set: {
+      projectId: task.projectId, columnId: task.columnId || null, title: task.title,
+      description: task.description ?? null, status: task.status, order: task.order,
+      linkedNoteId: task.linkedNoteId ?? null, updatedAt: new Date(task.updatedAt).toISOString()
+    }}).run();
+  }
   function updateTask(id: string, patch: { title?: string; description?: string; status?: KnowledgeTaskStatus; columnId?: string; order?: number; linkedNoteId?: string | null }): KnowledgeTask | null {
     const existing = db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, id)).get();
     if (!existing) return null;
@@ -755,8 +994,10 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     return row ? rowToTask(row) : null;
   }
   function deleteTask(id: string): void {
-    db.delete(knowledgeTasks).where(eq(knowledgeTasks.id, id)).run();
-    db.delete(knowledgeChunks).where(eq(knowledgeChunks.sourceId, id)).run();
+    sqlite.transaction(() => {
+      removeIndex("task", id);
+      db.delete(knowledgeTasks).where(eq(knowledgeTasks.id, id)).run();
+    })();
   }
   function moveTask(taskId: string, targetColumnId: string, targetIndex: number): void {
     const task = db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, taskId)).get();
@@ -780,63 +1021,52 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
   function reindexNote(note: KnowledgeNote, chunk: (text: string) => { content: string; contentHash: string }[]): void {
     const text = note.body ? `${note.title}\n\n${note.body}` : note.title;
     const pieces = chunk(text);
-    // delete existing chunks + FTS rows for this source
-    removeIndex("note", note.id);
-
-    const now = nowIso();
-    let ordinal = 0;
-    for (const piece of pieces) {
-      const chunkId = crypto.randomUUID();
-      db.insert(knowledgeChunks).values({
-        id: chunkId,
-        projectId: note.projectId,
-        sourceType: "note",
-        sourceId: note.id,
-        ordinal,
-        content: piece.content,
-        contentHash: piece.contentHash,
-        embeddingModel: null,
-        embeddingDimensions: null,
-        indexStatus: "pending",
-        indexError: null,
-        updatedAt: now
-      }).run();
-      sqlite.exec(
-        `INSERT INTO knowledge_chunks_fts (content, project_id, source_type, source_id, content_hash)
-         VALUES (${sqlStr(piece.content)}, ${sqlStr(note.projectId)}, 'note', ${sqlStr(note.id)}, ${sqlStr(piece.contentHash)})`
-      );
-      ordinal += 1;
-    }
+    sqlite.transaction(() => {
+      removeIndex("note", note.id);
+      const now = nowIso();
+      pieces.forEach((piece, ordinal) => {
+        const chunkId = crypto.randomUUID();
+        db.insert(knowledgeChunks).values({
+          id: chunkId, projectId: note.projectId, sourceType: "note", sourceId: note.id,
+          ordinal, content: piece.content, contentHash: piece.contentHash,
+          embeddingModel: null, embeddingDimensions: null, indexStatus: "pending",
+          indexError: null, retryCount: 0, nextRetryAt: null, updatedAt: now
+        }).run();
+        sqlite.prepare(`INSERT INTO knowledge_chunks_fts
+          (chunk_id, content, project_id, source_type, source_id, content_hash) VALUES (?, ?, ?, 'note', ?, ?)`)
+          .run(chunkId, piece.content, note.projectId, note.id, piece.contentHash);
+      });
+    })();
   }
 
   function reindexTask(task: KnowledgeTask, chunk: (text: string) => { content: string; contentHash: string }[]): void {
     const text = task.description ? `${task.title}\n\n${task.description}` : task.title;
     const pieces = chunk(text);
-    removeIndex("task", task.id);
-
-    const now = nowIso();
-    let ordinal = 0;
-    for (const piece of pieces) {
-      const chunkId = crypto.randomUUID();
-      db.insert(knowledgeChunks).values({
-        id: chunkId,
-        projectId: task.projectId,
-        sourceType: "task",
-        sourceId: task.id,
-        ordinal,
-        content: piece.content,
-        contentHash: piece.contentHash,
-        embeddingModel: null,
-        embeddingDimensions: null,
-        indexStatus: "pending",
-        indexError: null,
-        updatedAt: now
-      }).run();
-      ordinal += 1;
-    }
+    sqlite.transaction(() => {
+      removeIndex("task", task.id);
+      const now = nowIso();
+      pieces.forEach((piece, ordinal) => {
+        const chunkId = crypto.randomUUID();
+        db.insert(knowledgeChunks).values({
+          id: chunkId, projectId: task.projectId, sourceType: "task", sourceId: task.id,
+          ordinal, content: piece.content, contentHash: piece.contentHash,
+          embeddingModel: null, embeddingDimensions: null, indexStatus: "pending",
+          indexError: null, retryCount: 0, nextRetryAt: null, updatedAt: now
+        }).run();
+        sqlite.prepare(`INSERT INTO knowledge_chunks_fts
+          (chunk_id, content, project_id, source_type, source_id, content_hash) VALUES (?, ?, ?, 'task', ?, ?)`)
+          .run(chunkId, piece.content, task.projectId, task.id, piece.contentHash);
+      });
+    })();
   }
 
   function removeIndex(sourceType: "note" | "task", sourceId: string): void {
+    // Collect chunk ids so we can also drop their vec0 rows before deleting.
+    const chunkIds = db.select({ id: knowledgeChunks.id })
+      .from(knowledgeChunks)
+      .where(and(eq(knowledgeChunks.sourceType, sourceType), eq(knowledgeChunks.sourceId, sourceId)))
+      .all().map((r) => r.id);
+    for (const cid of chunkIds) delVecChunk(cid);
     // FTS5 delete-then-reinsert: drop matching FTS rows, then the chunk rows.
     sqlite.exec(
       `DELETE FROM knowledge_chunks_fts WHERE source_type = ${sqlStr(sourceType)} AND source_id = ${sqlStr(sourceId)}`
@@ -860,7 +1090,7 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     let sql: string;
     if (useMatch) {
       const ftsQuery = terms.map((t) => `"${t.replace(/"/g, "")}"*`).join(" OR ");
-      sql = `SELECT k.source_type, k.source_id, k.project_id, k.content,
+      sql = `SELECT k.chunk_id, k.source_type, k.source_id, k.project_id, k.content,
                 bm25(knowledge_chunks_fts) AS rank
          FROM knowledge_chunks_fts k
          WHERE k.content MATCH ${sqlStr(ftsQuery)}${projectClause}
@@ -868,13 +1098,13 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     } else {
       // LIKE fallback for short CJK terms; rank by position (earlier = better)
       const likeTerms = terms.map((t) => `k.content LIKE ${sqlStr(`%${t.replace(/[%_]/g, "\\$&")}%`)} ESCAPE '\\'`);
-      sql = `SELECT k.source_type, k.source_id, k.project_id, k.content, 0 AS rank
+      sql = `SELECT k.chunk_id, k.source_type, k.source_id, k.project_id, k.content, 0 AS rank
          FROM knowledge_chunks_fts k
          WHERE (${likeTerms.join(" OR ")})${projectClause}
          LIMIT ${cap}`;
     }
     const rows = sqlite.prepare(sql).all() as Array<{
-      source_type: "note" | "task"; source_id: string; project_id: string; content: string; rank: number;
+      chunk_id: string; source_type: "note" | "task"; source_id: string; project_id: string; content: string; rank: number;
     }>;
     // resolve titles + dedup by source (return best chunk per source)
     const bySource = new Map<string, KnowledgeSource>();
@@ -888,10 +1118,17 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
         projectId: row.project_id,
         title,
         excerpt: deriveExcerpt(row.content),
-        chunkId: key
+        chunkId: row.chunk_id
       });
     }
     return [...bySource.values()];
+  }
+
+  function getChunkContents(chunkIds: string[]): Map<string, string> {
+    if (!chunkIds.length) return new Map();
+    const rows = db.select({ id: knowledgeChunks.id, content: knowledgeChunks.content })
+      .from(knowledgeChunks).where(inArray(knowledgeChunks.id, chunkIds)).all();
+    return new Map(rows.map((row) => [row.id, row.content]));
   }
 
   function resolveSourceTitle(sourceType: "note" | "task", sourceId: string): string {
@@ -913,28 +1150,202 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     if (embeddingModel) {
       db.update(knowledgeChunks)
         .set({ indexStatus: "stale" })
-        .where(and(eq(knowledgeChunks.indexStatus, "indexed"), eq(knowledgeChunks.embeddingModel, embeddingModel)))
+        .where(and(
+          eq(knowledgeChunks.indexStatus, "indexed"),
+          or(isNull(knowledgeChunks.embeddingModel), ne(knowledgeChunks.embeddingModel, embeddingModel))
+        ))
         .run();
     } else {
       db.update(knowledgeChunks).set({ indexStatus: "stale" }).where(eq(knowledgeChunks.indexStatus, "indexed")).run();
     }
   }
 
-  function getIndexStatus(providerConfigured: boolean, vectorExtensionAvailable: boolean): IndexStatus {
+  function getIndexStatus(providerConfigured: boolean): IndexStatus {
     const countBy = (status: string): number => {
       const row = sqlite.prepare(
         `SELECT COUNT(*) AS n FROM knowledge_chunks WHERE index_status = ${sqlStr(status)}`
       ).get() as { n: number } | undefined;
       return row?.n ?? 0;
     };
+    const pending = countBy("pending");
+    const stale = countBy("stale");
+    const retrying = (sqlite.prepare(
+      "SELECT COUNT(*) AS n FROM knowledge_chunks WHERE index_status = 'failed' AND retry_count < 3 AND next_retry_at IS NOT NULL"
+    ).get() as { n: number }).n;
+    const hybridCapable = vecLoaded && providerConfigured;
+    const mode: IndexStatus["mode"] = hybridCapable
+      ? pending + stale + retrying > 0
+        ? "indexing"
+        : "hybrid"
+      : "fts-only";
     return {
-      mode: vectorExtensionAvailable ? "hybrid" : "fts-only",
-      pending: countBy("pending"),
+      mode,
+      pending,
       failed: countBy("failed"),
-      stale: countBy("stale"),
+      stale,
+      retrying,
       providerConfigured,
-      vectorExtensionAvailable
+      vectorExtensionAvailable: vecLoaded,
+      vecVersion,
+      vecLoadError: vecLoaded ? undefined : vecLoadError
     };
+  }
+
+  // ── vector indexing (Phase 3) ──
+  function ensureVecTable(dim: number): boolean {
+    if (!vecLoaded) return false;
+    if (vecDim === null) {
+      const existingSql = (sqlite.prepare("SELECT sql FROM sqlite_master WHERE name = 'knowledge_chunks_vec'").get() as { sql?: string } | undefined)?.sql;
+      const existingDim = Number(existingSql?.match(/FLOAT\[(\d+)\]/i)?.[1]);
+      const hasPartition = /project_id\s+TEXT\s+PARTITION\s+KEY/i.test(existingSql ?? "");
+      if (existingSql && (existingDim !== dim || !hasPartition)) {
+        sqlite.exec("DROP TABLE knowledge_chunks_vec");
+        markStale();
+      }
+      sqlite.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_vec USING vec0(
+        chunk_id TEXT PRIMARY KEY,
+        project_id TEXT PARTITION KEY,
+        embedding FLOAT[${dim}]
+      )`);
+      vecDim = dim;
+    } else if (vecDim !== dim) {
+      // dimension changed (model swap) → drop, recreate, force full re-embed
+      sqlite.exec("DROP TABLE IF EXISTS knowledge_chunks_vec");
+      sqlite.exec(
+        `CREATE VIRTUAL TABLE knowledge_chunks_vec USING vec0(
+          chunk_id TEXT PRIMARY KEY,
+          project_id TEXT PARTITION KEY,
+          embedding FLOAT[${dim}]
+        )`
+      );
+      vecDim = dim;
+      markStale();
+    }
+    return true;
+  }
+
+  function putVecChunk(chunkId: string, projectId: string, vec: number[]): void {
+    if (!vecLoaded || vecDim === null) return;
+    sqlite.prepare(
+      "INSERT OR REPLACE INTO knowledge_chunks_vec (chunk_id, project_id, embedding) VALUES (?, ?, ?)"
+    ).run(chunkId, projectId, toVecBuffer(vec));
+  }
+
+  function delVecChunk(chunkId: string): void {
+    if (!vecLoaded) return;
+    const exists = sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name = 'knowledge_chunks_vec'").get();
+    if (exists) sqlite.prepare("DELETE FROM knowledge_chunks_vec WHERE chunk_id = ?").run(chunkId);
+  }
+
+  function searchKnn(
+    queryVec: number[],
+    k: number,
+    projectId: string | null
+  ): KnowledgeSource[] {
+    if (!vecLoaded || vecDim === null || queryVec.length !== vecDim) return [];
+    const cap = Math.max(1, Math.min(k, 50));
+    const rows = projectId
+      ? sqlite.prepare(`SELECT v.chunk_id AS chunk_id, v.distance AS distance
+          FROM knowledge_chunks_vec v
+          WHERE v.embedding MATCH ? AND v.project_id = ? AND k = ?
+          ORDER BY v.distance`).all(toVecBuffer(queryVec), projectId, cap) as Array<{ chunk_id: string; distance: number }>
+      : sqlite.prepare(`SELECT v.chunk_id AS chunk_id, v.distance AS distance
+          FROM knowledge_chunks_vec v
+          WHERE v.embedding MATCH ? AND k = ?
+          ORDER BY v.distance`).all(toVecBuffer(queryVec), cap) as Array<{ chunk_id: string; distance: number }>;
+    if (!rows.length) return [];
+    const ids = rows.map((r) => r.chunk_id);
+    const chunkRows = db.select().from(knowledgeChunks).where(inArray(knowledgeChunks.id, ids)).all();
+    const byId = new Map(chunkRows.map((r) => [r.id, r]));
+    // dedup by source (first hit wins — rows are distance-sorted) + resolve title/excerpt
+    const bySource = new Map<string, KnowledgeSource>();
+    for (const r of rows) {
+      const c = byId.get(r.chunk_id);
+      if (!c) continue;
+      if (projectId && c.projectId !== projectId) continue;
+      const key = `${c.sourceType}:${c.sourceId}`;
+      if (bySource.has(key)) continue;
+      bySource.set(key, {
+        sourceType: c.sourceType,
+        sourceId: c.sourceId,
+        projectId: c.projectId,
+        title: resolveSourceTitle(c.sourceType, c.sourceId),
+        excerpt: deriveExcerpt(c.content),
+        chunkId: r.chunk_id
+      });
+    }
+    return [...bySource.values()];
+  }
+
+  function getCachedEmbedding(contentHash: string, model: string): { vector: number[]; dimensions: number } | null {
+    const row = db.select().from(embeddingCache)
+      .where(and(eq(embeddingCache.contentHash, contentHash), eq(embeddingCache.model, model))).get();
+    if (!row) return null;
+    return { vector: bufferToVec(row.embedding), dimensions: row.dimensions };
+  }
+
+  function putCachedEmbedding(contentHash: string, vec: number[], model: string, dim: number): void {
+    db.insert(embeddingCache).values({
+      contentHash,
+      embedding: toVecBuffer(vec),
+      model,
+      dimensions: dim
+    }).onConflictDoUpdate({
+      target: [embeddingCache.contentHash, embeddingCache.model],
+      set: { embedding: toVecBuffer(vec), model, dimensions: dim }
+    }).run();
+  }
+
+  function listPendingChunks(limit: number): Array<{
+    id: string; content: string; contentHash: string; projectId: string; sourceType: "note" | "task"; sourceId: string;
+  }> {
+    return db.select({
+      id: knowledgeChunks.id,
+      content: knowledgeChunks.content,
+      contentHash: knowledgeChunks.contentHash,
+      projectId: knowledgeChunks.projectId,
+      sourceType: knowledgeChunks.sourceType,
+      sourceId: knowledgeChunks.sourceId
+    })
+      .from(knowledgeChunks)
+      .where(or(
+        inArray(knowledgeChunks.indexStatus, ["pending", "stale"]),
+        and(
+          eq(knowledgeChunks.indexStatus, "failed"),
+          lt(knowledgeChunks.retryCount, 3),
+          lte(knowledgeChunks.nextRetryAt, nowIso())
+        )
+      ))
+      .limit(limit)
+      .all();
+  }
+
+  function markChunkIndexed(chunkId: string, model: string, dim: number): void {
+    db.update(knowledgeChunks).set({
+      indexStatus: "indexed",
+      embeddingModel: model,
+      embeddingDimensions: dim,
+      indexError: null,
+      retryCount: 0,
+      nextRetryAt: null,
+      updatedAt: nowIso()
+    }).where(eq(knowledgeChunks.id, chunkId)).run();
+  }
+
+  function markChunkFailed(chunkId: string, error: string): void {
+    const current = db.select({ retryCount: knowledgeChunks.retryCount })
+      .from(knowledgeChunks).where(eq(knowledgeChunks.id, chunkId)).get();
+    const retryCount = (current?.retryCount ?? 0) + 1;
+    const retryDelays = [60_000, 300_000, 1_800_000];
+    db.update(knowledgeChunks).set({
+      indexStatus: "failed",
+      indexError: error,
+      retryCount,
+      nextRetryAt: retryCount <= retryDelays.length
+        ? new Date(Date.now() + retryDelays[retryCount - 1]).toISOString()
+        : null,
+      updatedAt: nowIso()
+    }).where(eq(knowledgeChunks.id, chunkId)).run();
   }
 
   // safe SQL string literal (single-quote escape) for raw FTS queries
@@ -949,14 +1360,90 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
       .filter(Boolean);
   }
 
-  // silence unused binding reserved for Phase 3 raw-vec access
-  void sqlite;
-
   return {
-    listProjects, getProject, childProjects, projectPath, createProject, updateProject, deleteProject, ensureInbox,
-    notesForProject, getNote, createNote, updateNote, deleteNote, backlinksFor,
-    columnsForProject, createColumn, updateColumn, deleteColumn,
-    tasksForProject, createTask, updateTask, deleteTask, moveTask,
-    reindexNote, reindexTask, removeIndex, searchFts, markStale, getIndexStatus
+    runInTransaction,
+    listProjects, getProject, childProjects, projectPath, createProject, upsertImportedProject, updateProject, deleteProject, ensureInbox,
+    notesForProject, getNote, createNote, upsertImportedNote, updateNote, deleteNote, backlinksFor,
+    columnsForProject, createColumn, upsertImportedColumn, updateColumn, deleteColumn,
+    tasksForProject, createTask, upsertImportedTask, updateTask, deleteTask, moveTask,
+    reindexNote, reindexTask, removeIndex, searchFts, getChunkContents, markStale, getIndexStatus,
+    get vecLoaded() { return vecLoaded; },
+    ensureVecTable, searchKnn, putVecChunk, delVecChunk, getCachedEmbedding, putCachedEmbedding,
+    listPendingChunks, markChunkIndexed, markChunkFailed
   };
+}
+
+/** AI conversation store (Phase 4): multi-turn chat persistence with sources. */
+export function createAiConversationStore(database: NeoDatabase) {
+  if (database.kind !== "sqlite") {
+    throw new Error("AI conversation store requires a sqlite database");
+  }
+  const { db } = database;
+
+  function createConversation(projectId: string | null, mode: AiRetrievalMode): AiConversation {
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    db.insert(aiConversations).values({ id, projectId, mode, createdAt: ts, updatedAt: ts }).run();
+    return { id, projectId, mode, createdAt: Date.parse(ts), updatedAt: Date.parse(ts) };
+  }
+
+  function getConversation(id: string): AiConversation | null {
+    const row = db.select().from(aiConversations).where(eq(aiConversations.id, id)).get();
+    if (!row) return null;
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      mode: row.mode,
+      createdAt: Date.parse(row.createdAt),
+      updatedAt: Date.parse(row.updatedAt)
+    };
+  }
+
+  function listMessages(conversationId: string): AiMessage[] {
+    return db.select().from(aiMessages)
+      .where(eq(aiMessages.conversationId, conversationId))
+      .orderBy(asc(aiMessages.createdAt))
+      .all()
+      .map((row) => ({
+        id: row.id,
+        conversationId: row.conversationId,
+        role: row.role,
+        content: row.content,
+        sources: row.sourcesJson ? safeParseSources(row.sourcesJson) : [],
+        createdAt: Date.parse(row.createdAt)
+      }));
+  }
+
+  function appendMessage(
+    conversationId: string,
+    role: AiMessage["role"],
+    content: string,
+    sources: KnowledgeSource[] = []
+  ): AiMessage {
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    db.insert(aiMessages).values({
+      id,
+      conversationId,
+      role,
+      content,
+      sourcesJson: sources.length ? JSON.stringify(sources) : null,
+      createdAt: ts
+    }).run();
+    db.update(aiConversations).set({ updatedAt: ts }).where(eq(aiConversations.id, conversationId)).run();
+    return { id, conversationId, role, content, sources, createdAt: Date.parse(ts) };
+  }
+
+  return { createConversation, getConversation, listMessages, appendMessage };
+}
+
+export type AiConversationStore = ReturnType<typeof createAiConversationStore>;
+
+function safeParseSources(json: string): KnowledgeSource[] {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? (parsed as KnowledgeSource[]) : [];
+  } catch {
+    return [];
+  }
 }

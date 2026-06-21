@@ -219,15 +219,21 @@ export interface KnowledgeSource {
 }
 
 /** Rich index status returned by the API; the UI maps it to KnowledgeIndexState. */
-export type IndexMode = "hybrid" | "fts-only";
+export type IndexMode = "hybrid" | "fts-only" | "indexing";
 
 export interface IndexStatus {
   mode: IndexMode;
   pending: number;
   failed: number;
   stale: number;
+  /** Failed chunks currently eligible for automatic retry. */
+  retrying: number;
   providerConfigured: boolean;
   vectorExtensionAvailable: boolean;
+  /** sqlite-vec version when loaded; absent when not loaded. */
+  vecVersion?: string;
+  /** Reason sqlite-vec failed to load, so the UI can surface silent degradation. */
+  vecLoadError?: string;
 }
 
 /** Simplified UI state consumed by IndexStatusDot. */
@@ -244,6 +250,26 @@ export interface AiAnswer {
   text: string;
   sources: KnowledgeSource[];
   retrievalMode: AiRetrievalMode;
+  /** Chat 模式下回传的会话 id，供前端续传多轮；降级/Ask-未续传时为 undefined。 */
+  conversationId?: string;
+}
+
+/** AI 多轮会话（Phase 4，与 v1 pet 对话表分离）。 */
+export interface AiConversation {
+  id: string;
+  projectId: string | null;
+  mode: AiRetrievalMode;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AiMessage {
+  id: string;
+  conversationId: string;
+  role: "system" | "user" | "assistant";
+  content: string;
+  sources: KnowledgeSource[];
+  createdAt: number;
 }
 
 export type KnowledgeChunkIndexStatus = "pending" | "indexed" | "failed" | "stale";

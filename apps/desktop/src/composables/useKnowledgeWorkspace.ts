@@ -261,6 +261,7 @@ export function useKnowledgeWorkspace() {
     allNotes: computed(() => data.value.notes.value),
     allTasks: computed(() => data.value.tasks.value),
     indexStatus: computed(() => data.value.indexStatus.value),
+    vecDegradedReason: computed(() => data.value.vecDegradedReason?.value ?? null),
     formatKwTime,
   };
 }

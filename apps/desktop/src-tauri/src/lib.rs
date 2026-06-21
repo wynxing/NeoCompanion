@@ -2,6 +2,40 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{LogicalSize, Manager, Size, WindowEvent};
 
+#[tauri::command]
+fn get_app_auth_token() -> Result<String, String> {
+    std::env::var("APP_AUTH_TOKEN").map_err(|_| "APP_AUTH_TOKEN is required".to_string())
+}
+
+const KEYRING_SERVICE: &str = "com.neocompanion.desktop";
+const EMBEDDING_KEY_ACCOUNT: &str = "embedding-api-key";
+
+fn embedding_key_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, EMBEDDING_KEY_ACCOUNT).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_embedding_api_key(api_key: String) -> Result<(), String> {
+    embedding_key_entry()?.set_password(&api_key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_embedding_api_key() -> Result<Option<String>, String> {
+    match embedding_key_entry()?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn delete_embedding_api_key() -> Result<(), String> {
+    match embedding_key_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -12,6 +46,12 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_wallpaper::init());
 
     builder
+        .invoke_handler(tauri::generate_handler![
+            get_app_auth_token,
+            set_embedding_api_key,
+            get_embedding_api_key,
+            delete_embedding_api_key
+        ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;

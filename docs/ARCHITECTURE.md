@@ -35,9 +35,9 @@
 
 本文档同时描述 **已实现** 与 **规划中** 的技术设计。已实现的内容指当前代码中真实存在并运行的模块；规划中的内容标注为 `(Planned)` 或 `(Partial)`，例如：
 
-- **已实现**：Tauri 多窗口管理、Fastify Sidecar TCP 模式、SQLite + Drizzle ORM、任务/专注/天气/AI/TTS/窗口/Hook 等核心端点、WebSocket 实时推送、GitHub Actions CI/CD。
-- **部分实现 (Partial)**：v3.3 知识工作空间 UI 交互层已交付（卡片化项目浏览器、嵌套项目导航、笔记/看板/任务工作区、按项目自定义看板列、HTML5 拖拽排序、双向 wiki 链接与 backlinks、全局 light/dark 主题），但仍为前端 mock 数据，后端 SQLite 存储、FTS5 / `sqlite-vec` 检索与相关 API 尚未接入。
-- **规划中 (Planned)**：FTS5 全文索引、`sqlite-vec` 向量检索与混合排序、零端口 UDS Socket 模式 B、文件监听 Hook、MQTT 接入、屏幕上下文感知与本地长期记忆模块。
+- **已实现**：Tauri 多窗口管理、Fastify Sidecar TCP 模式、SQLite + Drizzle ORM、任务/专注/天气/AI/TTS/窗口/Hook 等核心端点、WebSocket 实时推送、GitHub Actions CI/CD。知识工作空间 v2（Phase 0–4）：文件型存储方向、后端 SQLite CRUD + 混合文件镜像、FTS5 全文检索（trigram，支持 CJK）、`sqlite-vec` 向量检索 + RRF 融合、Embedding Adapter（OpenAI 兼容，落库持久化 + 环境变量双通道）、AI Chat/Ask 双模式 + 三级上下文权限 + 引用审计反幻觉 + 多轮会话持久化。
+- **部分实现 (Partial)**：v1 `tasks(open|done)` 与 v2 `knowledge_tasks`（四态）的状态枚举统一尚未执行（延后决策，见 TODO_INVENTORY）。
+- **规划中 (Planned)**：零端口 UDS Socket 模式 B、文件监听 Hook、MQTT 接入、屏幕上下文感知与本地长期记忆模块。
 
 阅读时请注意段落中的状态标注，避免将规划内容误认为已交付功能。
 
@@ -1240,7 +1240,56 @@ export interface EmbeddingAdapter {
 
 当向量不可用时，`IndexStatus.mode` 为 `fts-only`，服务端继续用全文候选回答并在 UI 显示降级状态；不得静默退化为不使用知识库的普通聊天。
 
-### 9.4 Data Location
+`IndexStatus` 三态：`hybrid`（vec 加载且 provider 配置、无 pending/stale）、`indexing`（hybrid 可行但有 pending/stale 分块待嵌入）、`fts-only`（vec 未加载或 provider 未配置）。新增 `vecVersion`（sqlite-vec 版本）与 `vecLoadError`（加载失败原因），供前端在静默降级时向用户显示原因（"向量扩展加载失败：…" 或 "未配置 embedding provider，仅全文检索可用"）。
+
+### 9.4 AI Chat/Ask 双模式与引用审计
+
+移植自 [open-notebook](https://github.com/lfnovo/open-notebook) 的双模式 RAG 设计，由 `packages/server-local/src/modules/ai/` 实现：
+
+#### 9.4.1 双模式
+
+- **Chat 模式**：基于用户**手选**的笔记/任务上下文多轮对话。上下文来源是用户在 AI 面板勾选的条目（非检索），整篇或按权限裁剪后送 LLM，支持 `conversationId` 续接历史。
+- **Ask 模式**：向知识库提问，**自动检索**（`searchHybrid`）相关分块作答。单次问答，命中 chunk 送 LLM，一次性返回。
+
+两者共用同一套上下文打包与引用审计管线，差异仅在上下文来源（手选 vs 检索）。
+
+#### 9.4.2 三级上下文权限
+
+Chat 模式下每条笔记/任务可设 `full`（整篇正文）/ `summary`（首段摘要）/ `excluded`（排除）。`excluded` 条目不进入请求载荷。`context.ts` 按以下权重构建上下文块：
+
+| 块类型 | 权重 |
+|--------|------|
+| noteFull | 100 |
+| askChunk（检索命中） | 90 |
+| noteSummary | 70 |
+| task | 55 |
+| history（对话历史） | 40 |
+
+#### 9.4.3 上下文打包策略
+
+`packContext()` 在 6000 token 预算内：
+
+1. **greedy fill**：高权重块优先入，超预算整块丢弃。
+2. **gap fill**：剩余预算在**句子边界**截断补齐次权重块。
+3. **sandwich ordering**：最相关块置最前、次相关置最后（利用 LLM 对首尾注意力最强），同源块保留文档序。
+
+#### 9.4.4 引用注入与反幻觉审计
+
+`citation.ts`：
+
+1. `injectSources()`：每块注入为带稳定 ID 的可引用单元（`<source id="s0" …>`），系统 prompt 要求模型只引用已提供 ID、不发明新 ID、冲突并列引用。
+2. `parseAndAuditCitations()`：解析模型输出，**剔除模型编造的 ID**（反幻觉）。
+3. `buildSources()`：只返回实际被引用的 source，由服务端检索结果生成（非模型自报）→ 前端可点击跳转。
+
+#### 9.4.5 多轮会话持久化
+
+`ai_conversations`（会话，含 mode）与 `ai_messages`（消息，含 `sources_json`）表持久化对话。`AiAnswer.conversationId` 透传给前端，Ask 模式单轮、Chat 模式多轮续接。
+
+#### 9.4.6 Embedding 配置持久化
+
+Embedding provider 的非敏感配置（provider/baseUrl/model）持久化到 `app_config` 表。API Key 由 Tauri 写入系统钥匙链，桌面端启动后通过认证通道回填到 Sidecar 进程内存；也可由 `EMBEDDING_API_KEY` 环境变量提供。旧版 SQLite 明文密钥使用 claim → 写入钥匙链 → clear 两阶段流程迁移，钥匙链写入失败时不删除旧值。GET 端点返回 `apiKeySource: "keychain" | "env" | "legacy" | "none"`。
+
+### 9.5 Data Location
 
 ```
 用户数据目录 (Tauri app data):
@@ -1254,7 +1303,7 @@ export interface EmbeddingAdapter {
 
 数据目录由 Tauri 的 `app_data_dir()` 管理，跨平台统一。
 
-### 9.5 Migration Strategy
+### 9.6 Migration Strategy
 
 使用 Drizzle Kit 管理数据库迁移：
 
@@ -1272,7 +1321,7 @@ pnpm --filter db drizzle-kit migrate   # 执行迁移
 3. 创建 notes、tags、knowledge_chunks、FTS5 与 sqlite-vec 结构；旧任务随后进入增量索引队列。
 4. sqlite-vec 加载失败不得回滚业务表迁移；记录 `fts-only` 能力状态并继续启动。
 
-### 9.6 SQLite 并发并发安全与高频事件防抖写入 (SQLite Concurrency & Debounced Writes)
+### 9.7 SQLite 并发并发安全与高频事件防抖写入 (SQLite Concurrency & Debounced Writes)
 
 由于屏幕感知引擎与窗口检测模块会高频产生用户活动状态 Ticks（如窗口切换、空闲检测、打字活跃状态），如果每次微小变化都直接进行一次 SQLite 数据库写事务，将带来极高的磁盘 I/O 压力并诱发 `SQLITE_BUSY: database is locked` 并发锁定冲突。为此，系统强制应用以下并发优化：
 

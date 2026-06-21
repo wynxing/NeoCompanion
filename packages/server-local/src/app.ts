@@ -1,8 +1,9 @@
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
-import { streamDeepSeekChat } from "@neo-companion/ai";
-import { createDatabase, createKnowledgeStore, createTaskStore, createWindowEventStore, type KnowledgeStore, type NeoDatabase } from "@neo-companion/db";
+import { timingSafeEqual } from "node:crypto";
+import { streamDeepSeekChat, embedContents } from "@neo-companion/ai";
+import { createAiConversationStore, createDatabase, createKnowledgeStore, createTaskStore, createWindowEventStore, getAppConfig, setAppConfig, type AiConversationStore, type KnowledgeStore, type NeoDatabase } from "@neo-companion/db";
 import type { ChatMessage, CompanionFeedback, TtsResult } from "@neo-companion/shared";
 import { speakWithMimo } from "@neo-companion/tts";
 import { createFocusManager } from "./services/focus-manager";
@@ -10,7 +11,8 @@ import { createHookManager, type HookManagerEvents } from "./services/hook-manag
 import { getWeatherSummary } from "./services/weather-service";
 import { getActiveWindowSnapshot } from "./services/window-service";
 import { registerKnowledgeRoutes } from "./modules/knowledge/routes";
-import { createKnowledgeService, type KnowledgeService } from "./modules/knowledge/service";
+import { createKnowledgeService, type EmbeddingConfig, type KnowledgeService } from "./modules/knowledge/service";
+import { createAiService, resolveMode, type AiService, type ChatContextSelection } from "./modules/ai/service";
 import { WsHub } from "./ws-hub";
 
 export interface AppDependencies {
@@ -21,9 +23,13 @@ export interface AppDependencies {
   windowSnapshot?: typeof getActiveWindowSnapshot;
   startBackground?: boolean;
   hookManager?: ReturnType<typeof createHookManager>;
+  /** Shared bearer token. Tests inject this; production reads APP_AUTH_TOKEN. */
+  authToken?: string;
 }
 
 export async function createApp(dependencies: AppDependencies = {}) {
+  const authToken = dependencies.authToken ?? process.env.APP_AUTH_TOKEN;
+  if (!authToken) throw new Error("APP_AUTH_TOKEN is required");
   const database = dependencies.database ?? createDatabase();
   const taskStore = createTaskStore(database);
   const windowStore = createWindowEventStore(database);
@@ -31,15 +37,114 @@ export async function createApp(dependencies: AppDependencies = {}) {
   // fallback is reachable (better-sqlite3 native binding unavailable). Routes
   // degrade to 503 in that case.
   const knowledgeStore: KnowledgeStore | null = database.kind === "sqlite" ? createKnowledgeStore(database) : null;
-  const knowledgeService: KnowledgeService | null = knowledgeStore ? createKnowledgeService(knowledgeStore) : null;
+  // Embedding provider config persisted to the app_config table so it survives
+  // sidecar restarts (apiKey lives only in the local db file, never in git).
+  // Falls back to an in-memory variable on the memory database.
+  const EMBEDDING_CONFIG_KEY = "embedding";
+  const parseConfig = (raw: string | null): EmbeddingConfig => {
+    if (!raw) return { provider: "none" };
+    try {
+      const parsed = JSON.parse(raw) as EmbeddingConfig;
+      return parsed && typeof parsed === "object" ? parsed : { provider: "none" };
+    } catch {
+      return { provider: "none" };
+    }
+  };
+  const loadedEmbeddingConfig = database.kind === "sqlite" ? parseConfig(getAppConfig(database, EMBEDDING_CONFIG_KEY)) : { provider: "none" };
+  let legacyEmbeddingApiKey = loadedEmbeddingConfig.apiKey;
+  let runtimeEmbeddingApiKey: string | undefined;
+  let embeddingConfig: EmbeddingConfig = { ...loadedEmbeddingConfig, apiKey: undefined };
+  const persistEmbeddingConfig = () => {
+    if (database.kind !== "sqlite") return;
+    const persisted = { ...embeddingConfig, apiKey: legacyEmbeddingApiKey };
+    if (!legacyEmbeddingApiKey) delete persisted.apiKey;
+    setAppConfig(database, EMBEDDING_CONFIG_KEY, JSON.stringify(persisted));
+  };
+  const embeddingConfigController = {
+    get: () => ({ ...embeddingConfig, apiKey: runtimeEmbeddingApiKey ?? legacyEmbeddingApiKey }),
+    set: (next: EmbeddingConfig) => {
+      runtimeEmbeddingApiKey = next.apiKey;
+      embeddingConfig = { ...next, apiKey: undefined };
+      persistEmbeddingConfig();
+    },
+    getLegacySecret: () => legacyEmbeddingApiKey,
+    clearLegacySecret: () => {
+      legacyEmbeddingApiKey = undefined;
+      persistEmbeddingConfig();
+    }
+  };
+  const knowledgeService: KnowledgeService | null = knowledgeStore
+    ? createKnowledgeService(knowledgeStore, {
+        embedFn: embedContents,
+        getEmbeddingConfig: embeddingConfigController.get
+      })
+    : null;
+  void knowledgeService?.drainEmbeddings();
   const hub = new WsHub();
   const app = Fastify({ logger: true });
   const aiStream = dependencies.aiStream ?? ((messages) => streamDeepSeekChat(messages));
+  const aiConversationStore: AiConversationStore | null = database.kind === "sqlite" ? createAiConversationStore(database) : null;
+  const aiService = createAiService({
+    conversationStore: aiConversationStore,
+    knowledgeService,
+    knowledgeStore,
+    aiStream,
+    hub
+  });
   const ttsSpeak = dependencies.ttsSpeak ?? ((text, style) => speakWithMimo(text, style));
   const windowSnapshot = dependencies.windowSnapshot ?? getActiveWindowSnapshot;
 
-  await app.register(cors, { origin: true });
+  const allowedOrigins = new Set([
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "http://127.0.0.1:5173",
+    ...(process.env.NEO_ALLOWED_ORIGINS ?? "").split(",").map((v) => v.trim()).filter(Boolean)
+  ]);
+  await app.register(cors, {
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.has(origin)) callback(null, true);
+      else callback(null, false);
+    }
+  });
   await app.register(websocket);
+
+  const tokenMatches = (candidate: string | undefined): boolean => {
+    if (!candidate) return false;
+    const expected = Buffer.from(authToken);
+    const actual = Buffer.from(candidate);
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
+  };
+  const ROOT_PATH_KEY = "knowledge.rootPath";
+  let knowledgeRootPath = database.kind === "sqlite" ? (getAppConfig(database, ROOT_PATH_KEY) ?? "") : "";
+  const rootPathController = {
+    get: () => knowledgeRootPath,
+    set: (path: string) => {
+      knowledgeRootPath = path;
+      if (database.kind === "sqlite") setAppConfig(database, ROOT_PATH_KEY, path);
+    }
+  };
+
+  app.addHook("onRequest", async (request, reply) => {
+    const rawHost = request.headers.host ?? "";
+    const host = rawHost.startsWith("[") ? rawHost.slice(1, rawHost.indexOf("]")) : rawHost.split(":")[0];
+    if (!new Set(["127.0.0.1", "localhost", "::1"]).has(host)) {
+      return reply.code(403).send({ error: "host not allowed" });
+    }
+    const origin = request.headers.origin;
+    if (origin && !allowedOrigins.has(origin)) {
+      return reply.code(403).send({ error: "origin not allowed" });
+    }
+    if (request.method === "OPTIONS") return;
+    const bearer = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    const protocols = String(request.headers["sec-websocket-protocol"] ?? "")
+      .split(",")
+      .map((value) => value.trim());
+    const wsToken = protocols.find((value) => value.startsWith("auth."))?.slice(5);
+    if (!tokenMatches(bearer) && !tokenMatches(wsToken)) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+  });
 
   const focus = createFocusManager(database, {
     onTick(payload) {
@@ -99,7 +204,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
     return task;
   });
 
-  registerKnowledgeRoutes(app, knowledgeStore, knowledgeService);
+  registerKnowledgeRoutes(app, knowledgeStore, knowledgeService, embeddingConfigController, rootPathController);
 
   app.post("/api/focus/start", async (request) => {
     const body = request.body as { taskId?: string | null; durationMinutes?: number };
@@ -120,26 +225,28 @@ export async function createApp(dependencies: AppDependencies = {}) {
   app.get("/api/weather", async () => dependencies.weather?.() ?? getWeatherSummary());
 
   app.post("/api/ai/chat", async (request, reply) => {
-    const body = request.body as { message?: string };
+    const body = request.body as {
+      message?: string;
+      mode?: string;
+      projectId?: string;
+      context?: ChatContextSelection;
+      conversationId?: string;
+    };
     if (!body.message?.trim()) return reply.code(400).send({ error: "message is required" });
 
-    const messages: ChatMessage[] = [
-      { role: "system", content: "你是 NeoCompanion 的中文温柔陪伴助手，回答简洁、具体，不使用强主宠称呼。" },
-      { role: "user", content: body.message }
-    ];
-    let text = "";
-
     try {
-      hub.broadcast({ type: "companion:feedback", payload: { state: "thinking", text: "我想一想。", speak: false } satisfies CompanionFeedback });
-      for await (const chunk of aiStream(messages)) {
-        text += chunk;
-        hub.broadcast({ type: "ai:chunk", payload: { chunk } });
-      }
-      hub.broadcast({ type: "ai:done", payload: { text } });
-      return { text };
+      const mode = resolveMode(body.mode);
+      const answer = mode === "ask"
+        ? await aiService.handleAsk({ message: body.message, projectId: body.projectId ?? null })
+        : await aiService.handleChat({
+            message: body.message,
+            projectId: body.projectId ?? null,
+            context: body.context,
+            conversationId: body.conversationId
+          });
+      return answer;
     } catch (error) {
       const message = error instanceof Error ? error.message : "AI request failed";
-      hub.broadcast({ type: "ai:error", payload: { message } });
       return reply.code(500).send({ error: message });
     }
   });

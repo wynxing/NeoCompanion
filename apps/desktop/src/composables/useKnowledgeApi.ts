@@ -47,6 +47,10 @@ export interface KnowledgeDataSource {
   moveTask: (taskId: string, targetColumnId: string, targetIndex: number) => void;
   resolveLink: (label: string) => { type: "note" | "task"; id: string } | null;
   backlinksFor: (id: string) => KnowledgeLink[];
+  /** Reason vector retrieval is unavailable, when known (null = healthy/env). */
+  vecDegradedReason?: Ref<string | null>;
+  /** Refresh index status from the sidecar (API data source only). */
+  loadIndexStatus?(): Promise<void>;
 }
 
 /**
@@ -138,6 +142,7 @@ export function useKnowledgeApi(): KnowledgeDataSource {
   const tasksRef = ref<KnowledgeTask[]>([]);
   const columnsRef = ref<BoardColumn[]>([]);
   const indexStatus = ref<IndexStatus>("ok");
+  const vecDegradedReason = ref<string | null>(null);
   const ready = ref(false);
   const lastError = ref<string | null>(null);
 
@@ -165,12 +170,35 @@ export function useKnowledgeApi(): KnowledgeDataSource {
       columnsRef.value = columnsByProject;
       tasksRef.value = tasksByProject;
 
+      void loadIndexStatus();
+
       ready.value = true;
       lastError.value = null;
     } catch (error) {
       ready.value = false;
       lastError.value = error instanceof Error ? error.message : "加载知识库失败";
       throw error;
+    }
+  }
+
+  /** Pull the rich index status from the sidecar and map it to the UI state +
+   *  surface why vector retrieval is unavailable (so silent degradation is visible). */
+  async function loadIndexStatus(): Promise<void> {
+    try {
+      const status = await api.knowledgeIndexStatus();
+      indexStatus.value =
+        status.mode === "hybrid" ? "ok" : status.mode === "indexing" ? "indexing" : "fts_only";
+      if (status.mode === "fts-only") {
+        vecDegradedReason.value = status.vecLoadError
+          ? `向量扩展加载失败：${status.vecLoadError}`
+          : !status.providerConfigured
+            ? "未配置 embedding provider，仅全文检索可用"
+            : null;
+      } else {
+        vecDegradedReason.value = null;
+      }
+    } catch {
+      // Index status is best-effort; never block loadAll on it.
     }
   }
 
@@ -203,9 +231,12 @@ export function useKnowledgeApi(): KnowledgeDataSource {
   // ── optimistic write helpers ──
   function surfaceError(error: unknown, fallback: string): void {
     lastError.value = error instanceof Error ? error.message : fallback;
-    // auto-clear after a few seconds so the banner isn't sticky
-    window.setTimeout(() => {
-      if (lastError.value === (error instanceof Error ? error.message : fallback)) lastError.value = null;
+    // auto-clear after a few seconds so the banner isn't sticky.
+    // Use the global setTimeout (not window.setTimeout) so test cleanup that
+    // tears down window before the timer fires doesn't throw ReferenceError.
+    const msg = error instanceof Error ? error.message : fallback;
+    setTimeout(() => {
+      if (lastError.value === msg) lastError.value = null;
     }, 5000);
   }
 
@@ -364,6 +395,7 @@ export function useKnowledgeApi(): KnowledgeDataSource {
 
   return {
     loadAll,
+    loadIndexStatus,
     lastError,
     ready,
     projects,
@@ -371,6 +403,7 @@ export function useKnowledgeApi(): KnowledgeDataSource {
     tasks: tasksRef,
     columns: columnsRef,
     indexStatus,
+    vecDegradedReason,
     projectById,
     childrenByParentId,
     childProjects,

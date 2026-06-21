@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import type {
   EmbeddingProvider,
   SearchScope,
@@ -29,8 +29,14 @@ const scopeOptions: { value: SearchScope; label: string }[] = [
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const picking = ref(false);
+const saving = ref(false);
 
 const rootPathDisplay = computed(() => props.state.knowledgeRootPath.value || "未选择");
+
+onMounted(() => {
+  void props.state.loadEmbeddingConfig();
+  void props.state.loadKnowledgeRootPath();
+});
 
 async function pickRootFolder(): Promise<void> {
   if (!isTauri || picking.value) return;
@@ -38,10 +44,20 @@ async function pickRootFolder(): Promise<void> {
   try {
     const selected = await open({ directory: true, multiple: false });
     if (typeof selected === "string" && selected) {
-      props.state.setKnowledgeRootPath(selected);
+      await props.state.setKnowledgeRootPath(selected);
     }
   } finally {
     picking.value = false;
+  }
+}
+
+async function saveEmbeddingConfig(): Promise<void> {
+  if (saving.value) return;
+  saving.value = true;
+  try {
+    await props.state.saveEmbeddingConfig();
+  } finally {
+    saving.value = false;
   }
 }
 </script>
@@ -64,7 +80,7 @@ async function pickRootFolder(): Promise<void> {
 
       <SettingRow
         label="知识库根目录"
-        hint="笔记与索引数据的存放根目录（阶段 0 仅记录路径，文件化存储将在 v2 接入）"
+        hint="Markdown 文件镜像的根目录；SQLite 仍是业务数据与索引的主存储"
       >
         <template #action>
           <div class="knowledge-root-action">
@@ -87,6 +103,28 @@ async function pickRootFolder(): Promise<void> {
         </template>
       </SettingRow>
 
+      <SettingRow label="文件镜像" hint="SQLite 为主存储；手动导入或导出 Markdown 镜像，不同步文件删除">
+        <template #action>
+          <div class="knowledge-root-action">
+            <button type="button" class="btn-ghost" :disabled="state.knowledgeMirrorBusy.value || !state.knowledgeRootPath.value" @click="state.importKnowledgeMirror">
+              导入
+            </button>
+            <button type="button" class="btn-ghost" :disabled="state.knowledgeMirrorBusy.value || !state.knowledgeRootPath.value" @click="state.exportKnowledgeMirror">
+              导出
+            </button>
+          </div>
+        </template>
+      </SettingRow>
+
+      <p
+        v-if="state.knowledgeMirrorMessage.value"
+        class="knowledge-mirror-status"
+        :class="{ 'is-error': state.knowledgeMirrorError.value }"
+        role="status"
+      >
+        {{ state.knowledgeMirrorMessage.value }}
+      </p>
+
       <SettingRow label="Embedding Provider" hint="未配置时 AI 检索退化为仅 FTS5 全文搜索；笔记与看板始终可用">
         <template #action>
           <SelectField v-model="state.embeddingProvider.value" :options="providerOptions" />
@@ -96,6 +134,29 @@ async function pickRootFolder(): Promise<void> {
       <SettingRow label="Embedding 模型名" hint="如 text-embedding-3-small；留空使用 Provider 默认值">
         <template #action>
           <TextField v-model="state.embeddingModel.value" placeholder="text-embedding-3-small" />
+        </template>
+      </SettingRow>
+
+      <SettingRow label="Embedding API Base URL" hint="OpenAI 兼容端点；留空使用 Provider 默认">
+        <template #action>
+          <TextField v-model="state.embeddingBaseUrl.value" placeholder="https://api.openai.com" />
+        </template>
+      </SettingRow>
+
+      <SettingRow label="Embedding API Key" hint="由系统钥匙链保存；Sidecar 仅在进程内存中使用">
+        <template #action>
+          <TextField
+            v-model="state.embeddingApiKey.value"
+            :placeholder="state.embeddingConfigured.value ? '已配置（留空保持不变）' : 'sk-...'"
+          />
+        </template>
+      </SettingRow>
+
+      <SettingRow label="保存 Embedding 配置" hint="推送至本地服务端并触发后台向量索引">
+        <template #action>
+          <button type="button" class="btn-ghost" :disabled="saving" @click="saveEmbeddingConfig">
+            保存配置
+          </button>
         </template>
       </SettingRow>
 

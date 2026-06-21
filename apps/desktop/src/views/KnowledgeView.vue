@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { onMounted, onUnmounted } from "vue";
 import { useKnowledgeWorkspace } from "../composables/useKnowledgeWorkspace";
+import { useKnowledgeAi } from "../composables/useKnowledgeAi";
 import { useTheme } from "../composables/useTheme";
+import { connectWs } from "../api";
 import ProjectBrowser from "../components/knowledge/ProjectBrowser.vue";
 import ProjectWorkspace from "../components/knowledge/ProjectWorkspace.vue";
 import BreadcrumbNav from "../components/knowledge/BreadcrumbNav.vue";
@@ -9,9 +11,19 @@ import ThemeToggle from "../components/knowledge/ThemeToggle.vue";
 
 const workspace = useKnowledgeWorkspace();
 const theme = useTheme();
+const ai = useKnowledgeAi(workspace);
+
+let disconnectWs: (() => void) | null = null;
 
 onMounted(() => {
   void workspace.loadAll();
+  // Knowledge view is its own window; connect WS for ai:chunk streaming.
+  disconnectWs = connectWs(ai.handleWsMessage);
+});
+
+onUnmounted(() => {
+  disconnectWs?.();
+  disconnectWs = null;
 });
 </script>
 
@@ -41,6 +53,10 @@ onMounted(() => {
       {{ workspace.loadError.value ?? "后端未就绪，当前为本地预览数据。" }}
     </div>
 
+    <div v-if="workspace.vecDegradedReason.value" class="knowledge-banner knowledge-banner--info">
+      {{ workspace.vecDegradedReason.value }}
+    </div>
+
     <ProjectBrowser
       v-if="!workspace.currentProjectId.value"
       :workspace="workspace"
@@ -50,6 +66,7 @@ onMounted(() => {
     <ProjectWorkspace
       v-else
       :workspace="workspace"
+      :ai="ai"
       @exit="workspace.exitToParent"
     />
   </div>

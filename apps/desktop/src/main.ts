@@ -10,5 +10,9 @@ import "./styles/wallpaper.css";
 import "./styles/settings.css";
 import "./styles/knowledge.css";
 import "./styles/markdown.css";
+import { bootstrapEmbeddingSecret } from "./api";
 
 createApp(App).mount("#app");
+void bootstrapEmbeddingSecret().catch(() => {
+  // The settings view retries and surfaces credential/bootstrap errors.
+});

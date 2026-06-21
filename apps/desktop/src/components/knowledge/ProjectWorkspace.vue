@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { KnowledgeWorkspaceState } from "../../composables/useKnowledgeWorkspace";
+import type { KnowledgeAiState } from "../../composables/useKnowledgeAi";
 import { TAB_LABELS, type KnowledgeViewTab } from "../../composables/useKnowledgeMock";
 import IndexStatusDot from "./IndexStatusDot.vue";
 import KnowledgeNotesPanel from "./KnowledgeNotesPanel.vue";
 import KnowledgeBoardPanel from "./KnowledgeBoardPanel.vue";
 import KnowledgeTasksPanel from "./KnowledgeTasksPanel.vue";
+import KnowledgeAiPanel from "./KnowledgeAiPanel.vue";
 import ProjectBrowser from "./ProjectBrowser.vue";
 import QuickCreateBar from "./QuickCreateBar.vue";
 
 const props = defineProps<{
   workspace: KnowledgeWorkspaceState;
+  ai: KnowledgeAiState;
 }>();
 
 const emit = defineEmits<{
@@ -18,7 +21,7 @@ const emit = defineEmits<{
 }>();
 
 const tabs = computed<KnowledgeViewTab[]>(() => {
-  const base: KnowledgeViewTab[] = ["notes", "board", "tasks"];
+  const base: KnowledgeViewTab[] = ["notes", "board", "tasks", "ai"];
   return props.workspace.hasChildren.value ? [...base, "projects"] : base;
 });
 
@@ -94,6 +97,12 @@ const metaText = computed(() => {
         :workspace="workspace"
       />
 
+      <KnowledgeAiPanel
+        v-else-if="workspace.activeTab.value === 'ai'"
+        :workspace="workspace"
+        :ai="ai"
+      />
+
       <ProjectBrowser
         v-else-if="workspace.activeTab.value === 'projects'"
         :workspace="workspace"
@@ -101,6 +110,6 @@ const metaText = computed(() => {
       />
     </div>
 
-    <QuickCreateBar :workspace="workspace" />
+    <QuickCreateBar v-if="workspace.activeTab.value !== 'ai'" :workspace="workspace" />
   </section>
 </template>

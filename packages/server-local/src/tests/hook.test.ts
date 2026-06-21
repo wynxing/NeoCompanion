@@ -11,9 +11,17 @@ let baseUrl: string;
 
 beforeEach(async () => {
   app = await createApp({
+    authToken: "test-token",
     database: createDatabase(":memory:"),
     startBackground: false,
   });
+  const rawInject = app.inject.bind(app);
+  app.inject = ((options: any) => rawInject(
+    typeof options === "string" ? options : {
+      ...options,
+      headers: { authorization: "Bearer test-token", ...options.headers }
+    }
+  )) as typeof app.inject;
   await app.listen({ port: 0, host: "127.0.0.1" });
   const address = app.server.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${address.port}`;
@@ -26,7 +34,7 @@ afterEach(async () => {
 function connectTestWs(): Promise<{ ws: WebSocket; messages: unknown[]; close: () => void }> {
   return new Promise((resolve) => {
     const address = app.server.address() as AddressInfo;
-    const ws = new WebSocket(`ws://127.0.0.1:${address.port}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${address.port}/ws`, ["neo-companion", "auth.test-token"]);
     const messages: unknown[] = [];
     ws.on("message", (data: Buffer) => {
       messages.push(JSON.parse(data.toString()));

@@ -1,4 +1,6 @@
 import { ref } from "vue";
+import { api, bootstrapEmbeddingSecret } from "../api";
+import { invoke } from "@tauri-apps/api/core";
 
 /**
  * Settings composable — 阶段 1 仅维护本地状态，所有改动留在内存里。
@@ -28,8 +30,6 @@ export type TtsEngine = "edge" | "openai" | "system";
 export type CommandFrequency = string;
 export type EmbeddingProvider = "none" | "openai" | "cohere" | "local";
 export type SearchScope = "current" | "all";
-
-const KNOWLEDGE_ROOT_PATH_KEY = "neo:knowledgeRootPath";
 
 export function useSettings() {
   const activeSection = ref<SettingsSection>("general");
@@ -77,24 +77,103 @@ export function useSettings() {
   // —— 知识库（v3.3 新增；mock 状态，等 v2 接 sidecar 时迁出）
   const embeddingProvider = ref<EmbeddingProvider>("none");
   const embeddingModel = ref("");
+  const embeddingBaseUrl = ref(
+    typeof localStorage !== "undefined" ? localStorage.getItem("neo.embeddingBaseUrl") ?? "" : "",
+  );
+  // apiKey 仅存内存 + 推送服务端，不落 localStorage（敏感）
+  const embeddingApiKey = ref("");
+  const embeddingConfigured = ref(false);
+  const embeddingApiKeySource = ref<"keychain" | "env" | "legacy" | "none">("none");
   const searchScope = ref<SearchScope>("current");
   const chunkSize = ref("1200");
   const indexAutoRebuild = ref(true);
   // 知识库根目录：阶段 0 仅记录路径并持久化到 localStorage，数据仍为 mock；
   // v2 文件化存储接入后由 sidecar 读取此路径作为笔记/索引落盘根目录。
-  const knowledgeRootPath = ref<string>(
-    typeof localStorage !== "undefined" ? localStorage.getItem(KNOWLEDGE_ROOT_PATH_KEY) ?? "" : "",
-  );
+  const knowledgeRootPath = ref("");
+  const knowledgeMirrorBusy = ref(false);
+  const knowledgeMirrorMessage = ref("");
+  const knowledgeMirrorError = ref(false);
 
-  function reindexAll(): void {
-    // mock：v2 接入后会调用 api.reindexKnowledge()
+  async function loadEmbeddingConfig(): Promise<void> {
+    try {
+      await bootstrapEmbeddingSecret();
+      const status = await api.knowledgeGetEmbeddingConfig();
+      embeddingProvider.value = (status.provider as EmbeddingProvider) || "none";
+      embeddingBaseUrl.value = status.baseUrl;
+      embeddingModel.value = status.model;
+      embeddingConfigured.value = status.configured;
+      embeddingApiKeySource.value = status.apiKeySource;
+    } catch {
+      // sidecar 不可用时静默降级
+    }
   }
 
-  function setKnowledgeRootPath(path: string): void {
-    const trimmed = path.trim();
-    knowledgeRootPath.value = trimmed;
+  async function saveEmbeddingConfig(): Promise<void> {
     if (typeof localStorage !== "undefined") {
-      localStorage.setItem(KNOWLEDGE_ROOT_PATH_KEY, trimmed);
+      localStorage.setItem("neo.embeddingBaseUrl", embeddingBaseUrl.value);
+    }
+    const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    if (isTauri && embeddingProvider.value === "none") {
+      await invoke("delete_embedding_api_key");
+    } else if (isTauri && embeddingApiKey.value) {
+      await invoke("set_embedding_api_key", { apiKey: embeddingApiKey.value });
+    }
+    await api.knowledgeSetEmbeddingConfig({
+      provider: embeddingProvider.value,
+      baseUrl: embeddingBaseUrl.value || undefined,
+      apiKey: embeddingProvider.value === "none" ? null : (embeddingApiKey.value || undefined),
+      model: embeddingModel.value || undefined,
+      apiKeySource: embeddingProvider.value === "none"
+        ? "none"
+        : isTauri && (embeddingApiKey.value || embeddingApiKeySource.value === "keychain") ? "keychain" : undefined
+    });
+    if (embeddingApiKeySource.value === "legacy") {
+      await api.knowledgeClearLegacyEmbeddingSecret();
+    }
+    embeddingApiKey.value = ""; // 清空内存中的明文 key
+    await loadEmbeddingConfig();
+  }
+
+  async function reindexAll(): Promise<void> {
+    await api.knowledgeReindex(embeddingModel.value || undefined);
+  }
+
+  async function loadKnowledgeRootPath(): Promise<void> {
+    const result = await api.knowledgeGetRootPath();
+    knowledgeRootPath.value = result.path;
+  }
+
+  async function setKnowledgeRootPath(path: string): Promise<void> {
+    const trimmed = path.trim();
+    const result = await api.knowledgeSetRootPath(trimmed);
+    knowledgeRootPath.value = result.path;
+  }
+
+  async function exportKnowledgeMirror(): Promise<void> {
+    knowledgeMirrorBusy.value = true;
+    knowledgeMirrorError.value = false;
+    try {
+      const result = await api.knowledgeMirrorExport();
+      knowledgeMirrorMessage.value = `已导出 ${result.projects} 个项目、${result.notes} 篇笔记、${result.tasks} 个任务`;
+    } catch (error) {
+      knowledgeMirrorError.value = true;
+      knowledgeMirrorMessage.value = error instanceof Error ? error.message : "导出失败";
+    } finally {
+      knowledgeMirrorBusy.value = false;
+    }
+  }
+
+  async function importKnowledgeMirror(): Promise<void> {
+    knowledgeMirrorBusy.value = true;
+    knowledgeMirrorError.value = false;
+    try {
+      const result = await api.knowledgeMirrorImport();
+      knowledgeMirrorMessage.value = `已导入 ${result.importedProjects} 个项目、${result.importedNotes} 篇笔记；重建 ${result.reindexedNotes} 篇笔记索引`;
+    } catch (error) {
+      knowledgeMirrorError.value = true;
+      knowledgeMirrorMessage.value = error instanceof Error ? error.message : "导入失败";
+    } finally {
+      knowledgeMirrorBusy.value = false;
     }
   }
 
@@ -153,10 +232,17 @@ export function useSettings() {
     mqttEnabled,
     embeddingProvider,
     embeddingModel,
+    embeddingBaseUrl,
+    embeddingApiKey,
+    embeddingConfigured,
+    embeddingApiKeySource,
     searchScope,
     chunkSize,
     indexAutoRebuild,
     knowledgeRootPath,
+    knowledgeMirrorBusy,
+    knowledgeMirrorMessage,
+    knowledgeMirrorError,
     // actions
     setSection,
     selectModel,
@@ -165,6 +251,11 @@ export function useSettings() {
     addBlacklistItem,
     reindexAll,
     setKnowledgeRootPath,
+    loadKnowledgeRootPath,
+    exportKnowledgeMirror,
+    importKnowledgeMirror,
+    loadEmbeddingConfig,
+    saveEmbeddingConfig,
   };
 }
 

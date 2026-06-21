@@ -4,7 +4,19 @@ import type {
   KnowledgeTaskStatus
 } from "@neo-companion/shared";
 import { exportToDir, importFromDir } from "./mirror";
-import type { KnowledgeService } from "./service";
+import type { EmbeddingConfig, KnowledgeService } from "./service";
+
+/** Lets the embedding-config route read/mutate the shared config held in app.ts. */
+export interface EmbeddingConfigController {
+  get(): EmbeddingConfig;
+  set(config: EmbeddingConfig): void;
+  getLegacySecret(): string | undefined;
+  clearLegacySecret(): void;
+}
+export interface RootPathController {
+  get(): string;
+  set(path: string): void;
+}
 
 /**
  * Knowledge workspace REST routes (Phase 1 CRUD).
@@ -16,11 +28,17 @@ import type { KnowledgeService } from "./service";
  * Retrieval (search / index-status / reindex) and AI integration land in
  * Phase 2–4 via modules/knowledge/service.ts.
  */
-export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeStore | null, service: KnowledgeService | null) {
+export function registerKnowledgeRoutes(
+  app: FastifyInstance,
+  store: KnowledgeStore | null,
+  service: KnowledgeService | null,
+  embeddingConfigController?: EmbeddingConfigController,
+  rootPathController?: RootPathController
+) {
   // File-mirror root path. The frontend owns the canonical path in localStorage
   // (useSettings.knowledgeRootPath) and pushes it here so the sidecar can do
   // export/import. Empty until the user picks a folder.
-  let rootPath = "";
+  let rootPath = rootPathController?.get() ?? "";
 
   const requireStore = (reply: import("fastify").FastifyReply): KnowledgeStore | null => {
     if (!store) {
@@ -234,14 +252,13 @@ export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeSt
     const query = request.query as { q?: string; projectId?: string; limit?: string };
     if (!query.q?.trim()) return reply.code(400).send({ error: "q is required" });
     const limit = query.limit ? Number.parseInt(query.limit, 10) : 20;
-    return svc.search(query.projectId ?? null, query.q, Number.isFinite(limit) ? limit : 20);
+    return svc.searchHybrid(query.projectId ?? null, query.q, Number.isFinite(limit) ? limit : 20);
   });
 
   app.get("/api/knowledge/index-status", async (request, reply) => {
     const svc = requireService(reply);
     if (!svc) return;
-    // Phase 3 will pass real provider/vector flags; for now FTS-only mode.
-    return svc.indexStatus(false, false);
+    return svc.indexStatus();
   });
 
   app.post("/api/knowledge/reindex", async (request, reply) => {
@@ -252,12 +269,74 @@ export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeSt
     return svc.reindexAll();
   });
 
+  // ── Embedding provider config (Phase 3) ──
+  // Persisted to app_config (survives restart); apiKey lives only in the local
+  // db file and is never echoed back. apiKey is optional — when absent the
+  // service falls back to the EMBEDDING_API_KEY env var.
+  app.get("/api/knowledge/embedding-config", async () => {
+    const cfg = embeddingConfigController?.get() ?? { provider: "none" };
+    const hasRuntimeKey = !!cfg.apiKey;
+    const hasLegacyKey = !!embeddingConfigController?.getLegacySecret();
+    const hasEnvKey = !!process.env.EMBEDDING_API_KEY;
+    return {
+      provider: cfg.provider,
+      baseUrl: cfg.baseUrl ?? "",
+      model: cfg.model ?? "",
+      configured: cfg.provider !== "none" && !!cfg.model && (hasRuntimeKey || hasLegacyKey || hasEnvKey),
+      apiKeySource: hasLegacyKey ? "legacy" : cfg.apiKeySource === "keychain" ? "keychain" : hasEnvKey ? "env" : "none",
+      legacyMigrationRequired: hasLegacyKey
+    };
+  });
+
+  app.post("/api/knowledge/embedding-config/legacy-secret/claim", async (request, reply) => {
+    const apiKey = embeddingConfigController?.getLegacySecret();
+    if (!apiKey) return reply.code(404).send({ error: "legacy secret not found" });
+    return { apiKey };
+  });
+
+  app.delete("/api/knowledge/embedding-config/legacy-secret", async (request, reply) => {
+    embeddingConfigController?.clearLegacySecret();
+    return reply.code(204).send();
+  });
+
+  app.put("/api/knowledge/embedding-config", async (request, reply) => {
+    if (!embeddingConfigController) return reply.code(503).send({ error: "embedding config unavailable" });
+    const body = request.body as Partial<EmbeddingConfig>;
+    const current = embeddingConfigController.get();
+    // A non-empty apiKey overwrites the stored secret; an absent/empty apiKey
+    // keeps the existing stored key (UI masks the secret). To switch to env-var
+    // mode the client sends an explicit apiKey: null which clears the stored key.
+    let apiKey: string | undefined;
+    if (body.apiKey) {
+      apiKey = body.apiKey;
+    } else if (body.apiKey === null) {
+      apiKey = undefined; // clear stored key → fall back to env var
+    } else {
+      apiKey = current.apiKey;
+    }
+    const next: EmbeddingConfig = {
+      provider: body.provider ?? current.provider,
+      baseUrl: body.baseUrl ?? current.baseUrl,
+      apiKey,
+      model: body.model ?? current.model,
+      apiKeySource: body.apiKeySource ?? current.apiKeySource
+    };
+    embeddingConfigController.set(next);
+    // model change → mark stale so chunks re-embed with the new model
+    if (next.model && next.model !== current.model) {
+      service?.markStale(next.model);
+    }
+    await service?.drainEmbeddings();
+    return { ok: true };
+  });
+
   // ── File mirror (hybrid SQLite + Markdown/JSONL) ──
   app.get("/api/knowledge/root-path", async () => ({ path: rootPath }));
 
   app.put("/api/knowledge/root-path", async (request, reply) => {
     const body = request.body as { path?: string };
     rootPath = (body.path ?? "").trim();
+    rootPathController?.set(rootPath);
     return { path: rootPath };
   });
 
@@ -277,7 +356,10 @@ export function registerKnowledgeRoutes(app: FastifyInstance, store: KnowledgeSt
     const body = (request.body as { path?: string } | null) ?? {};
     const source = (body.path ?? rootPath).trim();
     if (!source) return reply.code(400).send({ error: "rootPath not set" });
-    const stats = await importFromDir(kw, source);
+    const stats = await importFromDir(kw, source, {
+      noteChanged: (note) => service?.reindexNote(note),
+      taskChanged: (task) => service?.reindexTask(task)
+    });
     return stats;
   });
 }
