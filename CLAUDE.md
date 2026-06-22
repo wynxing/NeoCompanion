@@ -48,6 +48,11 @@ Vue 3 Frontend
 - Every Sidecar REST and WebSocket request requires the shared `APP_AUTH_TOKEN`; use the root `pnpm dev` / `pnpm dev:tauri` launchers so development processes receive the same ephemeral token.
 - The codebase still uses `pet`/`companion` identifiers in many places (`components/pet/`, `usePetState.ts`, `pet.css`). The product-facing terminology is **assistant**, but a full code-level rename is out of scope for documentation-only work.
 - The sidecar runs on `http://127.0.0.1:10103` by default (configurable via `NEO_SERVER_PORT`).
+- **Database location**: SQLite lives in the OS-standard application data directory, not in the project tree:
+  - Windows: `%APPDATA%\NeoCompanion\neo-companion.sqlite`
+  - macOS: `~/Library/Application Support/NeoCompanion/neo-companion.sqlite`
+  - Linux: `${XDG_DATA_HOME:-~/.local/share}/NeoCompanion/neo-companion.sqlite`
+  Override the path with `NEO_DB_PATH` (use `:memory:` for ephemeral runs). Tests pass `":memory:"` explicitly and are unaffected.
 
 ## Development Quick Reference
 

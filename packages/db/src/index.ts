@@ -1,3 +1,6 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { mkdirSync } from "node:fs";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -51,7 +54,38 @@ export type NeoDatabase =
       close: () => void;
     };
 
-export function createDatabase(filename = process.env.NEO_DB_PATH ?? "neo-companion.sqlite") {
+/**
+ * Resolve the default on-disk SQLite path.
+ *
+ * Priority:
+ *   1. `NEO_DB_PATH` (explicit override; can be `:memory:` or any path)
+ *   2. OS-standard application data directory:
+ *      - Windows: `%APPDATA%\NeoCompanion\neo-companion.sqlite`
+ *      - macOS:   `~/Library/Application Support/NeoCompanion/neo-companion.sqlite`
+ *      - Linux:   `${XDG_DATA_HOME:-~/.local/share}/NeoCompanion/neo-companion.sqlite`
+ *
+ * Ensures the parent directory exists so better-sqlite3 can open the file.
+ */
+export function resolveDefaultDbPath(): string {
+  const override = process.env.NEO_DB_PATH;
+  if (override && override.length > 0) return override;
+
+  const home = homedir();
+  let baseDir: string;
+  if (process.platform === "win32") {
+    baseDir = process.env.APPDATA ?? join(home, "AppData", "Roaming");
+  } else if (process.platform === "darwin") {
+    baseDir = join(home, "Library", "Application Support");
+  } else {
+    baseDir = process.env.XDG_DATA_HOME ?? join(home, ".local", "share");
+  }
+
+  const appDir = join(baseDir, "NeoCompanion");
+  mkdirSync(appDir, { recursive: true });
+  return join(appDir, "neo-companion.sqlite");
+}
+
+export function createDatabase(filename = resolveDefaultDbPath()) {
   try {
     const sqlite = new Database(filename);
     sqlite.pragma("journal_mode = WAL");
