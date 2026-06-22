@@ -9,3 +9,11 @@ coverage/
 neo-companion.sqlite
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
+
+# Windows reserved device names that may accidentally materialize as files
+# (e.g. when a `> nul` redirection is run in a non-Win32 shell context).
+nul
+CON
+PRN
+AUX
+NUL

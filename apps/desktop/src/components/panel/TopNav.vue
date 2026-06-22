@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { CompanionState } from "@neo-companion/shared";
+import { companionStateImages } from "../../assets/companion";
 
 defineProps<{
-  petState: CompanionState; // TODO: Phase 2 — use for dynamic avatar state
+  petState: CompanionState;
   isDark: boolean;
 }>();
 
@@ -16,19 +17,11 @@ const emit = defineEmits<{
   <nav class="panel-topnav" data-tauri-drag-region>
     <!-- Pet avatar button -->
     <button
-      class="icon-btn"
+      class="icon-btn companion-avatar-button"
       type="button"
-      style="padding: 0; overflow: hidden"
-      :style="{
-        background: 'radial-gradient(circle at 30% 30%, #ffe0a3, #ffb347 55%, #c2410c 100%)',
-        boxShadow: '0 6px 20px rgba(255,140,40,.35), inset 0 1px 0 rgba(255,255,255,.6)',
-      }"
+      aria-label="NeoCompanion 当前状态"
     >
-      <span style="position: relative; width: 48px; height: 48px; display: block">
-        <span style="position: absolute; left: 14px; top: 18px; width: 4px; height: 6px; background: #3b1f0a; border-radius: 2px"></span>
-        <span style="position: absolute; right: 14px; top: 18px; width: 4px; height: 6px; background: #3b1f0a; border-radius: 2px"></span>
-        <span style="position: absolute; left: 50%; bottom: 14px; width: 14px; height: 5px; border: 2px solid #3b1f0a; border-top: 0; border-radius: 0 0 12px 12px; transform: translateX(-50%)"></span>
-      </span>
+      <img class="companion-avatar-image" :src="companionStateImages[petState]" alt="" />
     </button>
 
     <!-- Theme toggle + Settings -->
@@ -57,3 +50,21 @@ const emit = defineEmits<{
     </button>
   </nav>
 </template>
+
+<style scoped>
+.companion-avatar-button {
+  padding: 2px;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 58%, #fff1b8, #f6b24e 62%, #c95d1b 100%);
+  box-shadow:
+    0 6px 20px rgba(255, 140, 40, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.companion-avatar-image {
+  display: block;
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+}
+</style>
