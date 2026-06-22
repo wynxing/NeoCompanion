@@ -301,3 +301,109 @@ describe("hook system", () => {
     });
   });
 });
+
+// Persistence test runs in its own describe block: it needs a real on-disk
+// SQLite file (not :memory:) so a second createApp() call can re-open the same
+// database and see the rules that the first instance committed.
+describe("Hook always-rules persistence across restart", () => {
+  it("survives sidecar restart via hook_always_rules table", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createDatabase } = await import("@neo-companion/db");
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "neo-hook-persist-"));
+    const dbPath = join(tmpDir, "test.sqlite");
+
+    try {
+      // ── Run #1: create rule via always decision ──
+      const app1 = await createApp({
+        authToken: "test-token",
+        database: createDatabase(dbPath),
+        startBackground: false
+      });
+      const raw1 = app1.inject.bind(app1);
+      app1.inject = ((options: any) => raw1(typeof options === "string" ? options : {
+        ...options,
+        headers: { authorization: "Bearer test-token", ...options.headers }
+      })) as typeof app1.inject;
+      await app1.listen({ port: 0, host: "127.0.0.1" });
+      const addr1 = app1.server.address() as AddressInfo;
+      const baseUrl1 = `http://127.0.0.1:${addr1.port}`;
+
+      const wsConn = await new Promise<{ ws: WebSocket; messages: unknown[] }>((resolve) => {
+        const ws = new WebSocket(`${baseUrl1.replace("http", "ws")}/ws`, ["neo-companion", "auth.test-token"]);
+        const messages: unknown[] = [];
+        ws.on("message", (data: Buffer) => messages.push(JSON.parse(data.toString())));
+        ws.on("open", () => resolve({ ws, messages }));
+      });
+
+      const reqPromise = app1.inject({
+        method: "POST",
+        url: "/api/hook/permission",
+        payload: { agentId: "persist/agent", command: "rm -rf", severity: 1 }
+      });
+      // Wait for permission:request to land in WS
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          const msg = wsConn.messages.find((m: any) => m.type === "permission:request");
+          if (msg) return resolve();
+          setTimeout(check, 10);
+        };
+        check();
+      });
+      const reqMsg = wsConn.messages.find((m: any) => m.type === "permission:request") as { payload: PermissionRequestPayload };
+      wsConn.ws.send(JSON.stringify({
+        type: "permission:response",
+        payload: { requestId: reqMsg.payload.requestId, decision: "always" }
+      }));
+      await reqPromise;
+
+      wsConn.ws.close();
+      await app1.close();
+
+      // ── Run #2: fresh app, same db file → rule should be restored ──
+      const app2 = await createApp({
+        authToken: "test-token",
+        database: createDatabase(dbPath),
+        startBackground: false
+      });
+      const raw2 = app2.inject.bind(app2);
+      app2.inject = ((options: any) => raw2(typeof options === "string" ? options : {
+        ...options,
+        headers: { authorization: "Bearer test-token", ...options.headers }
+      })) as typeof app2.inject;
+
+      const listRes = await app2.inject({ method: "GET", url: "/api/hook/always-rules" });
+      expect(listRes.statusCode).toBe(200);
+      const rules = listRes.json() as Array<{ agentId: string; commandPrefix: string }>;
+      expect(rules.length).toBe(1);
+      expect(rules[0].agentId).toBe("persist/agent");
+      expect(rules[0].commandPrefix).toBe("rm -rf");
+
+      // Delete rule, then verify deletion is also persisted
+      await app2.inject({
+        method: "DELETE",
+        url: "/api/hook/always-rules",
+        payload: { agentId: "persist/agent", commandPrefix: "rm -rf" }
+      });
+      await app2.close();
+
+      const app3 = await createApp({
+        authToken: "test-token",
+        database: createDatabase(dbPath),
+        startBackground: false
+      });
+      const raw3 = app3.inject.bind(app3);
+      app3.inject = ((options: any) => raw3(typeof options === "string" ? options : {
+        ...options,
+        headers: { authorization: "Bearer test-token", ...options.headers }
+      })) as typeof app3.inject;
+      const listRes3 = await app3.inject({ method: "GET", url: "/api/hook/always-rules" });
+      expect((listRes3.json() as unknown[]).length).toBe(0);
+      await app3.close();
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
