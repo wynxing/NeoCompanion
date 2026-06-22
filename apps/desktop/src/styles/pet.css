@@ -74,7 +74,7 @@
   z-index: 1;
   display: block;
   width: auto;
-  max-width: min(88%, 250px);
+  max-width: min(94%, 280px);
   max-height: 390px;
   object-fit: contain;
   object-position: center bottom;
@@ -302,7 +302,7 @@
 
 @media (max-width: 760px) {
   .companion-image {
-    max-width: min(86%, 230px);
+    max-width: min(94%, 280px);
   }
 }
 
