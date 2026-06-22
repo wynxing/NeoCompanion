@@ -474,8 +474,12 @@ function bufferToVec(buf: Buffer | Uint8Array): number[] {
 export function createTaskStore(database: NeoDatabase) {
   if (database.kind === "memory") {
     return {
-      list(): Task[] {
-        return [...database.tasks].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      list(opts?: { limit?: number; offset?: number }): { items: Task[]; total: number } {
+        const sorted = [...database.tasks].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        const total = sorted.length;
+        const offset = opts?.offset ?? 0;
+        const limit = opts?.limit ?? sorted.length;
+        return { items: sorted.slice(offset, offset + limit), total };
       },
       create(title: string): Task {
         const task = createTaskValue(title);
@@ -497,8 +501,12 @@ export function createTaskStore(database: NeoDatabase) {
   const { db } = database;
 
   return {
-    list(): Task[] {
-      return db.select().from(tasks).orderBy(tasks.createdAt).all().map(rowToTask);
+    list(opts?: { limit?: number; offset?: number }): { items: Task[]; total: number } {
+      const all = db.select().from(tasks).orderBy(tasks.createdAt).all().map(rowToTask);
+      const total = all.length;
+      const offset = opts?.offset ?? 0;
+      const limit = opts?.limit ?? all.length;
+      return { items: all.slice(offset, offset + limit), total };
     },
     create(title: string): Task {
       const task = createTaskValue(title);

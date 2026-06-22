@@ -7,6 +7,7 @@ import type {
   IndexStatus,
   KnowledgeSource,
   Task,
+  TaskListResponse,
   TtsResult,
   WeatherSummary,
   WsMessage
@@ -77,7 +78,7 @@ function getAuthToken(): Promise<string> {
 
 export const api = {
   health: () => request<{ ok: boolean }>("/health"),
-  listTasks: () => request<Task[]>("/api/tasks"),
+  listTasks: () => request<TaskListResponse>("/api/tasks").then((r) => r.items),
   createTask: (title: string) => request<Task>("/api/tasks", { method: "POST", body: JSON.stringify({ title }) }),
   patchTask: (id: string, patch: Partial<Pick<Task, "title" | "status">>) =>
     request<Task>(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),

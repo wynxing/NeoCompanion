@@ -14,7 +14,8 @@ describe("db stores", () => {
 
     const task = tasks.create("写 v1 骨架");
     expect(task.status).toBe("open");
-    expect(tasks.list()).toHaveLength(1);
+    expect(tasks.list().items).toHaveLength(1);
+    expect(tasks.list().total).toBe(1);
 
     const done = tasks.patch(task.id, { status: "done" });
     expect(done?.completedAt).toBeTruthy();

@@ -8,7 +8,11 @@ interface ForecastResponse {
   current?: { temperature_2m?: number; precipitation?: number };
 }
 
-export async function getWeatherSummary(fetcher: typeof fetch = fetch): Promise<WeatherSummary> {
+/** Cache weather for 10 minutes to avoid hammering open-meteo on every poll. */
+const CACHE_TTL_MS = Number(process.env.NEO_WEATHER_CACHE_TTL_MS ?? 10 * 60 * 1000);
+let cache: { value: WeatherSummary; expiresAt: number } | null = null;
+
+async function fetchWeatherSummary(fetcher: typeof fetch): Promise<WeatherSummary> {
   const city = process.env.NEO_CITY?.trim();
   let latitude = Number(process.env.NEO_LAT);
   let longitude = Number(process.env.NEO_LON);
@@ -48,4 +52,19 @@ export async function getWeatherSummary(fetcher: typeof fetch = fetch): Promise<
       ? `${resolvedCity} 现在可能有雨，出门前记得看一眼伞。`
       : `${resolvedCity} 现在约 ${temperatureC ?? "未知"}°C，适合慢慢进入今天的节奏。`
   };
+}
+
+export async function getWeatherSummary(fetcher: typeof fetch = fetch): Promise<WeatherSummary> {
+  // Serve from cache when fresh.
+  if (cache && cache.expiresAt > Date.now()) {
+    return cache.value;
+  }
+  const value = await fetchWeatherSummary(fetcher);
+  cache = { value, expiresAt: Date.now() + CACHE_TTL_MS };
+  return value;
+}
+
+/** Bypass cache (used by tests / force-refresh query). */
+export function clearWeatherCache(): void {
+  cache = null;
 }

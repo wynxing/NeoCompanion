@@ -15,6 +15,9 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/rate-limit": "^11.0.0",
+    "@fastify/type-provider-typebox": "^6.1.0",
     "@fastify/websocket": "11.2.0",
     "@neo-companion/ai": "workspace:*",
     "@neo-companion/db": "workspace:*",
