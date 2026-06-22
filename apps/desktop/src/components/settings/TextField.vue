@@ -5,11 +5,13 @@ withDefaults(
     placeholder?: string;
     maxWidth?: string;
     align?: "left" | "center";
+    type?: "text" | "password";
   }>(),
   {
     placeholder: "",
     maxWidth: "280px",
     align: "left",
+    type: "text",
   },
 );
 
@@ -26,6 +28,7 @@ function onInput(target: EventTarget | null): void {
 <template>
   <input
     class="text-input"
+    :type="type"
     :value="modelValue"
     :placeholder="placeholder"
     :style="{ maxWidth, textAlign: align }"

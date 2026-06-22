@@ -46,6 +46,9 @@ async function pickRootFolder(): Promise<void> {
     if (typeof selected === "string" && selected) {
       await props.state.setKnowledgeRootPath(selected);
     }
+  } catch (error) {
+    props.state.knowledgeMirrorError.value = true;
+    props.state.knowledgeMirrorMessage.value = error instanceof Error ? error.message : "设置知识库根目录失败";
   } finally {
     picking.value = false;
   }
@@ -147,6 +150,7 @@ async function saveEmbeddingConfig(): Promise<void> {
         <template #action>
           <TextField
             v-model="state.embeddingApiKey.value"
+            type="password"
             :placeholder="state.embeddingConfigured.value ? '已配置（留空保持不变）' : 'sk-...'"
           />
         </template>
