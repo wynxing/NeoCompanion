@@ -22,16 +22,28 @@ export interface HookManagerEvents {
   onPermissionAutoDismiss(payload: PermissionAutoDismissPayload): void;
 }
 
+/**
+ * Optional persistence backend for always-allow rules. When omitted the manager
+ * stays in-memory only (used by some unit tests). Production wiring injects the
+ * sqlite-backed store from @neo-companion/db so rules survive restarts.
+ */
+export interface HookRulesPersistence {
+  list(): Array<{ agentId: string; commandPrefix: string; createdAt: number }>;
+  add(agentId: string, commandPrefix: string, createdAt: number): void;
+  remove(agentId: string, commandPrefix: string): void;
+}
+
 interface PendingApproval {
   request: PermissionRequest;
   resolve: (value: PermissionResponse) => void;
   reject: (reason: Error) => void;
 }
 
-export function createHookManager(events: HookManagerEvents) {
+export function createHookManager(events: HookManagerEvents, rulesStore?: HookRulesPersistence) {
   const agentStates = new Map<string, AgentState>();
   const pendingApprovals = new Map<string, PendingApproval>();
-  const alwaysRules: AlwaysRule[] = [];
+  // Seed from persistence (if any); subsequent add/remove write through.
+  const alwaysRules: AlwaysRule[] = rulesStore?.list() ?? [];
 
   function pushEvent(event: HookEvent): void {
     agentStates.set(event.agentId, event.state);
@@ -119,14 +131,19 @@ export function createHookManager(events: HookManagerEvents) {
   function addAlwaysRule(agentId: string, command: string): void {
     // Don't duplicate
     if (checkAlways(agentId, command)) return;
-    alwaysRules.push({ agentId, commandPrefix: command, createdAt: Date.now() });
+    const createdAt = Date.now();
+    alwaysRules.push({ agentId, commandPrefix: command, createdAt });
+    rulesStore?.add(agentId, command, createdAt);
   }
 
   function removeAlwaysRule(agentId: string, commandPrefix: string): void {
     const idx = alwaysRules.findIndex(
       (r) => r.agentId === agentId && r.commandPrefix === commandPrefix,
     );
-    if (idx !== -1) alwaysRules.splice(idx, 1);
+    if (idx !== -1) {
+      alwaysRules.splice(idx, 1);
+      rulesStore?.remove(agentId, commandPrefix);
+    }
   }
 
   function getAlwaysRules(): AlwaysRule[] {

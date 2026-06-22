@@ -285,6 +285,12 @@ export function initSchema(sqlite: Database.Database) {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS hook_always_rules (
+      agent_id TEXT NOT NULL,
+      command_prefix TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (agent_id, command_prefix)
+    );
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
       applied_at TEXT NOT NULL
@@ -345,6 +351,42 @@ function runSchemaMigrations(sqlite: Database.Database): void {
       `);
     }
   });
+  // v4: indexes for hot query paths. All CREATE INDEX IF NOT EXISTS so reruns
+  // are no-ops. Covers the WHERE/ORDER BY columns used by stores in this file.
+  apply(4, () => {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS idx_projects_parent_id ON projects(parent_id);
+      CREATE INDEX IF NOT EXISTS idx_projects_is_inbox ON projects(is_inbox);
+      CREATE INDEX IF NOT EXISTS idx_notes_project_id ON notes(project_id);
+      CREATE INDEX IF NOT EXISTS idx_note_tags_note_id ON note_tags(note_id);
+      CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id ON note_tags(tag_id);
+      CREATE INDEX IF NOT EXISTS idx_board_columns_project_id ON board_columns(project_id);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_tasks_project_id ON knowledge_tasks(project_id);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_tasks_column_id ON knowledge_tasks(column_id);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_tasks_project_column ON knowledge_tasks(project_id, column_id);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_source ON knowledge_chunks(source_type, source_id);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_project_id ON knowledge_chunks(project_id);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_index_status ON knowledge_chunks(index_status);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_retry ON knowledge_chunks(index_status, next_retry_at);
+      CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_ai_conversations_project ON ai_conversations(project_id);
+      CREATE INDEX IF NOT EXISTS idx_focus_sessions_task_id ON focus_sessions(task_id);
+      CREATE INDEX IF NOT EXISTS idx_focus_sessions_status ON focus_sessions(status);
+      CREATE INDEX IF NOT EXISTS idx_window_events_captured_at ON window_events(captured_at);
+      CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at);
+    `);
+  });
+  // v5: hook_always_rules table for hook permission persistence (survives restart).
+  apply(5, () => {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS hook_always_rules (
+        agent_id TEXT NOT NULL,
+        command_prefix TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (agent_id, command_prefix)
+      );
+    `);
+  });
 }
 
 /** Read a single app_config value (JSON string), or null when absent. */
@@ -360,6 +402,51 @@ export function setAppConfig(database: NeoDatabase, key: string, value: string):
   database.sqlite
     .prepare("INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
     .run(key, value, new Date().toISOString());
+}
+
+/**
+ * Hook permission "always-allow" rules store. Survives sidecar restarts.
+ * On the memory fallback (no native sqlite) returns an in-memory shim so the
+ * hook manager stays consistent — rules just won't persist across restarts.
+ */
+export interface HookRulesStore {
+  list(): Array<{ agentId: string; commandPrefix: string; createdAt: number }>;
+  add(agentId: string, commandPrefix: string, createdAt: number): void;
+  remove(agentId: string, commandPrefix: string): void;
+}
+
+export function createHookRulesStore(database: NeoDatabase): HookRulesStore {
+  if (database.kind !== "sqlite") {
+    const rules: Array<{ agentId: string; commandPrefix: string; createdAt: number }> = [];
+    return {
+      list: () => [...rules],
+      add: (agentId, commandPrefix, createdAt) => {
+        if (rules.some((r) => r.agentId === agentId && r.commandPrefix === commandPrefix)) return;
+        rules.push({ agentId, commandPrefix, createdAt });
+      },
+      remove: (agentId, commandPrefix) => {
+        const idx = rules.findIndex((r) => r.agentId === agentId && r.commandPrefix === commandPrefix);
+        if (idx !== -1) rules.splice(idx, 1);
+      }
+    };
+  }
+  const sqlite = database.sqlite;
+  return {
+    list: () => {
+      const rows = sqlite.prepare("SELECT agent_id, command_prefix, created_at FROM hook_always_rules").all() as Array<{ agent_id: string; command_prefix: string; created_at: number }>;
+      return rows.map((r) => ({ agentId: r.agent_id, commandPrefix: r.command_prefix, createdAt: r.created_at }));
+    },
+    add: (agentId, commandPrefix, createdAt) => {
+      sqlite
+        .prepare("INSERT OR IGNORE INTO hook_always_rules (agent_id, command_prefix, created_at) VALUES (?, ?, ?)")
+        .run(agentId, commandPrefix, createdAt);
+    },
+    remove: (agentId, commandPrefix) => {
+      sqlite
+        .prepare("DELETE FROM hook_always_rules WHERE agent_id = ? AND command_prefix = ?")
+        .run(agentId, commandPrefix);
+    }
+  };
 }
 
 /** Load the sqlite-vec extension into a connection. Never throws; returns loaded state + error reason. */
