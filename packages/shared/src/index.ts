@@ -284,4 +284,3 @@ export type KnowledgeChunkIndexStatus = "pending" | "indexed" | "failed" | "stal
 // ── Request/Response Schemas (TypeBox) ──
 // Shared runtime-validatable schemas for Fastify route validation. See schemas.ts.
 export * from "./schemas";
-
