@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createDatabase, createKnowledgeStore, isSqliteAvailable } from "@neo-companion/db";
 import { createKnowledgeService } from "./service";
 
-// Skipped when better-sqlite3 native binding is unavailable (this environment).
+// Skipped when the SQLite database cannot be opened in this environment.
 describe.skipIf(!isSqliteAvailable())("knowledge indexer (FTS5)", () => {
   it("reindexes a note and returns it via FTS5 search", () => {
     const database = createDatabase(":memory:");

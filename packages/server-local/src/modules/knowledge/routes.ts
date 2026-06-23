@@ -60,7 +60,7 @@ export interface RootPathController {
  * Knowledge workspace REST routes (Phase 1 CRUD).
  *
  * The knowledge store requires the sqlite path; when only the memory fallback
- * is reachable (e.g. better-sqlite3 native binding unavailable), `store` is null
+ * is reachable (e.g. the configured database cannot be opened), `store` is null
  * and these routes return 503 so the rest of the app keeps working.
  *
  * Retrieval (search / index-status / reindex) and AI integration land in

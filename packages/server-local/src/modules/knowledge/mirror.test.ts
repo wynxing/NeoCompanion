@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { KnowledgeStore } from "@neo-companion/db";
+import { createDatabase, createKnowledgeStore, type KnowledgeStore } from "@neo-companion/db";
 import { exportToDir, importFromDir } from "./mirror";
+import { createKnowledgeService } from "./service";
 import type {
   KnowledgeBoardColumn,
   KnowledgeNote,
@@ -178,5 +179,36 @@ describe("knowledge file mirror", () => {
     const second = await importFromDir(target, dir);
     expect(second.importedProjects).toBe(0);
     expect(second.importedNotes).toBe(0);
+  });
+
+  it("imports and reindexes through the real sqlite store in one transaction", async () => {
+    const source = createFakeStore();
+    const project = source.createProject({ title: "真实导入", order: 1 });
+    const note = source.createNote(project.id, "嵌套事务笔记");
+    source.updateNote(note.id, {
+      body: "镜像导入索引内容用于验证真实数据库事务和全文检索重建",
+      tags: ["sqlite"]
+    });
+    await exportToDir(source, dir);
+
+    const database = createDatabase(":memory:");
+    try {
+      const store = createKnowledgeStore(database);
+      const service = createKnowledgeService(store);
+      const stats = await importFromDir(store, dir, {
+        noteChanged: (changed) => service.reindexNote(changed),
+        taskChanged: (changed) => service.reindexTask(changed)
+      });
+
+      expect(stats.errors).toEqual([]);
+      expect(stats.importedNotes).toBe(1);
+      expect(stats.reindexedNotes).toBe(1);
+      expect(store.searchFts(project.id, "镜像导入索引", 5)[0]).toMatchObject({
+        sourceId: note.id,
+        sourceType: "note"
+      });
+    } finally {
+      database.close();
+    }
   });
 });
