@@ -1,10 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import * as sqliteVec from "sqlite-vec";
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import { and, eq, like, asc, inArray, ne, or, isNull, lt, lte } from "drizzle-orm";
 import type {
   AiConversation,
   AiMessage,
@@ -20,30 +18,26 @@ import type {
   Task,
   WindowSnapshot
 } from "@neo-companion/shared";
-import {
-  aiConversations,
-  aiMessages,
-  focusSessions,
-  knowledgeBoardColumns,
-  knowledgeChunks,
-  knowledgeNoteTags,
-  knowledgeNotes,
-  knowledgeProjects,
-  knowledgeTags,
-  knowledgeTasks,
-  embeddingCache,
-  tasks,
-  windowEvents
-} from "./schema";
+import type {
+  AiConversationRow,
+  AiMessageRow,
+  BoardColumnRow,
+  EmbeddingCacheRow,
+  FocusSessionRow,
+  KnowledgeChunkRow,
+  KnowledgeTaskRow,
+  NoteRow,
+  ProjectRow,
+  TaskRow,
+  WindowEventRow
+} from "./types";
 
-export * from "./schema";
 export * from "./knowledge-fs";
 
 export type NeoDatabase =
   | {
       kind: "sqlite";
-      sqlite: Database.Database;
-      db: ReturnType<typeof drizzle>;
+      sqlite: DatabaseSync;
       close: () => void;
     }
   | {
@@ -64,7 +58,7 @@ export type NeoDatabase =
  *      - macOS:   `~/Library/Application Support/NeoCompanion/neo-companion.sqlite`
  *      - Linux:   `${XDG_DATA_HOME:-~/.local/share}/NeoCompanion/neo-companion.sqlite`
  *
- * Ensures the parent directory exists so better-sqlite3 can open the file.
+ * Ensures the parent directory exists so the database can open the file.
  */
 export function resolveDefaultDbPath(): string {
   const override = process.env.NEO_DB_PATH;
@@ -87,16 +81,17 @@ export function resolveDefaultDbPath(): string {
 
 export function createDatabase(filename = resolveDefaultDbPath()) {
   try {
-    const sqlite = new Database(filename);
-    sqlite.pragma("journal_mode = WAL");
-    sqlite.pragma("foreign_keys = ON");
-    const db = drizzle(sqlite);
+    const sqlite = new DatabaseSync(filename, {
+      allowExtension: true,
+      timeout: 5_000
+    });
+    sqlite.exec("PRAGMA journal_mode = WAL");
+    sqlite.exec("PRAGMA foreign_keys = ON");
     initSchema(sqlite);
 
     return {
       kind: "sqlite" as const,
       sqlite,
-      db,
       close: () => sqlite.close()
     };
   } catch (error) {
@@ -113,10 +108,10 @@ export function createDatabase(filename = resolveDefaultDbPath()) {
   }
 }
 
-/** True when the better-sqlite3 native binding loads (sqlite path reachable). */
+/** True when the sqlite native binding loads (sqlite path reachable). */
 export function isSqliteAvailable(): boolean {
   try {
-    const probe = new Database(":memory:");
+    const probe = new DatabaseSync(":memory:", { allowExtension: true });
     probe.close();
     return true;
   } catch {
@@ -124,7 +119,40 @@ export function isSqliteAvailable(): boolean {
   }
 }
 
-export function initSchema(sqlite: Database.Database) {
+interface TransactionState {
+  depth: number;
+  nextSavepoint: number;
+}
+
+const transactionStates = new WeakMap<DatabaseSync, TransactionState>();
+
+function withTransaction<T>(sqlite: DatabaseSync, fn: () => T): T {
+  const state = transactionStates.get(sqlite) ?? { depth: 0, nextSavepoint: 0 };
+  transactionStates.set(sqlite, state);
+
+  const savepoint = state.depth === 0 ? null : `neo_tx_${state.nextSavepoint++}`;
+  sqlite.exec(savepoint ? `SAVEPOINT ${savepoint}` : "BEGIN");
+  state.depth += 1;
+
+  try {
+    const result = fn();
+    sqlite.exec(savepoint ? `RELEASE SAVEPOINT ${savepoint}` : "COMMIT");
+    return result;
+  } catch (error) {
+    if (savepoint) {
+      sqlite.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+      sqlite.exec(`RELEASE SAVEPOINT ${savepoint}`);
+    } else {
+      sqlite.exec("ROLLBACK");
+    }
+    throw error;
+  } finally {
+    state.depth -= 1;
+    if (state.depth === 0) transactionStates.delete(sqlite);
+  }
+}
+
+export function initSchema(sqlite: DatabaseSync) {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,
@@ -299,18 +327,18 @@ export function initSchema(sqlite: Database.Database) {
   runSchemaMigrations(sqlite);
 }
 
-function runSchemaMigrations(sqlite: Database.Database): void {
-  const applied = new Set((sqlite.prepare("SELECT version FROM schema_migrations").all() as Array<{ version: number }>).map((r) => r.version));
+function runSchemaMigrations(sqlite: DatabaseSync): void {
+  const applied = new Set((sqlite.prepare("SELECT version FROM schema_migrations").all() as unknown as Array<{ version: number }>).map((r) => r.version));
   const apply = (version: number, migrate: () => void) => {
     if (applied.has(version)) return;
-    sqlite.transaction(() => {
+    withTransaction(sqlite, () => {
       migrate();
       sqlite.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)").run(version, new Date().toISOString());
-    })();
+    });
   };
 
   apply(1, () => {
-    const columns = sqlite.prepare("PRAGMA table_info(embedding_cache)").all() as Array<{ name: string; pk: number }>;
+    const columns = sqlite.prepare("PRAGMA table_info(embedding_cache)").all() as unknown as Array<{ name: string; pk: number }>;
     const composite = columns.filter((c) => c.pk > 0).length === 2;
     if (!composite) {
       sqlite.exec(`
@@ -328,7 +356,7 @@ function runSchemaMigrations(sqlite: Database.Database): void {
     }
   });
   apply(2, () => {
-    const names = new Set((sqlite.prepare("PRAGMA table_info(knowledge_chunks)").all() as Array<{ name: string }>).map((c) => c.name));
+    const names = new Set((sqlite.prepare("PRAGMA table_info(knowledge_chunks)").all() as unknown as Array<{ name: string }>).map((c) => c.name));
     if (!names.has("retry_count")) sqlite.exec("ALTER TABLE knowledge_chunks ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0");
     if (!names.has("next_retry_at")) sqlite.exec("ALTER TABLE knowledge_chunks ADD COLUMN next_retry_at TEXT");
   });
@@ -433,7 +461,7 @@ export function createHookRulesStore(database: NeoDatabase): HookRulesStore {
   const sqlite = database.sqlite;
   return {
     list: () => {
-      const rows = sqlite.prepare("SELECT agent_id, command_prefix, created_at FROM hook_always_rules").all() as Array<{ agent_id: string; command_prefix: string; created_at: number }>;
+      const rows = sqlite.prepare("SELECT agent_id, command_prefix, created_at FROM hook_always_rules").all() as unknown as Array<{ agent_id: string; command_prefix: string; created_at: number }>;
       return rows.map((r) => ({ agentId: r.agent_id, commandPrefix: r.command_prefix, createdAt: r.created_at }));
     },
     add: (agentId, commandPrefix, createdAt) => {
@@ -461,13 +489,13 @@ export function loadVecExtension(database: NeoDatabase): { loaded: boolean; vers
   }
 }
 
-/** Serialize a vector for better-sqlite3 BLOB binding (Float32 little-endian). */
-export function toVecBuffer(vec: number[]): Buffer {
-  return Buffer.from(new Float32Array(vec).buffer);
+/** Serialize a vector for sqlite BLOB binding (Float32 little-endian). */
+export function toVecBuffer(vec: number[]): Uint8Array {
+  return new Uint8Array(new Float32Array(vec).buffer);
 }
 
 /** Deserialize a stored BLOB back to a number[]. */
-function bufferToVec(buf: Buffer | Uint8Array): number[] {
+function bufferToVec(buf: Uint8Array): number[] {
   return Array.from(new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4));
 }
 
@@ -498,11 +526,11 @@ export function createTaskStore(database: NeoDatabase) {
     };
   }
 
-  const { db } = database;
+  const { sqlite } = database;
 
   return {
     list(opts?: { limit?: number; offset?: number }): { items: Task[]; total: number } {
-      const all = db.select().from(tasks).orderBy(tasks.createdAt).all().map(rowToTask);
+      const all = (sqlite.prepare("SELECT id, title, status, created_at, completed_at FROM tasks ORDER BY created_at").all() as unknown as TaskRow[]).map(rowToTask);
       const total = all.length;
       const offset = opts?.offset ?? 0;
       const limit = opts?.limit ?? all.length;
@@ -510,15 +538,15 @@ export function createTaskStore(database: NeoDatabase) {
     },
     create(title: string): Task {
       const task = createTaskValue(title);
-      db.insert(tasks).values(toTaskRow(task)).run();
+      sqlite.prepare("INSERT INTO tasks (id, title, status, created_at, completed_at) VALUES (?, ?, ?, ?, ?)").run(task.id, task.title, task.status, task.createdAt, task.completedAt);
       return task;
     },
     patch(id: string, patch: Partial<Pick<Task, "title" | "status">>): Task | null {
-      const existing = db.select().from(tasks).where(eq(tasks.id, id)).get();
+      const existing = sqlite.prepare("SELECT id, title, status, created_at, completed_at FROM tasks WHERE id = ?").get(id) as unknown as TaskRow | undefined;
       if (!existing) return null;
 
       const next = patchTaskValue(rowToTask(existing), patch);
-      db.update(tasks).set(toTaskRow(next)).where(eq(tasks.id, id)).run();
+      sqlite.prepare("UPDATE tasks SET title = ?, status = ?, completed_at = ? WHERE id = ?").run(next.title, next.status, next.completedAt, id);
       return next;
     }
   };
@@ -545,24 +573,24 @@ export function createFocusStore(database: NeoDatabase) {
     };
   }
 
-  const { db } = database;
+  const { sqlite } = database;
 
   return {
     create(taskId: string | null, durationMinutes: number): FocusSession {
       const session = createFocusValue(taskId, durationMinutes);
-      db.insert(focusSessions).values(toFocusRow(session)).run();
+      sqlite.prepare("INSERT INTO focus_sessions (id, task_id, status, started_at, completed_at, duration_minutes) VALUES (?, ?, ?, ?, ?, ?)").run(session.id, session.taskId, session.status, session.startedAt, session.completedAt, session.durationMinutes);
       return session;
     },
     updateStatus(id: string, status: FocusSession["status"]): FocusSession | null {
-      const existing = db.select().from(focusSessions).where(eq(focusSessions.id, id)).get();
+      const existing = sqlite.prepare("SELECT id, task_id, status, started_at, completed_at, duration_minutes FROM focus_sessions WHERE id = ?").get(id) as unknown as FocusSessionRow | undefined;
       if (!existing) return null;
 
       const next = patchFocusStatus(rowToFocus(existing), status);
-      db.update(focusSessions).set(toFocusRow(next)).where(eq(focusSessions.id, id)).run();
+      sqlite.prepare("UPDATE focus_sessions SET status = ?, completed_at = ? WHERE id = ?").run(next.status, next.completedAt, id);
       return next;
     },
     get(id: string): FocusSession | null {
-      const existing = db.select().from(focusSessions).where(eq(focusSessions.id, id)).get();
+      const existing = sqlite.prepare("SELECT id, task_id, status, started_at, completed_at, duration_minutes FROM focus_sessions WHERE id = ?").get(id) as unknown as FocusSessionRow | undefined;
       return existing ? rowToFocus(existing) : null;
     }
   };
@@ -583,28 +611,19 @@ export function createWindowEventStore(database: NeoDatabase) {
     };
   }
 
-  const { db } = database;
+  const { sqlite } = database;
 
   return {
     create(snapshot: WindowSnapshot): WindowSnapshot {
-      db.insert(windowEvents)
-        .values({
-          id: crypto.randomUUID(),
-          title: snapshot.title,
-          processName: snapshot.processName,
-          capturedAt: snapshot.capturedAt,
-          dwellSeconds: snapshot.dwellSeconds,
-          classification: snapshot.classification
-        })
-        .run();
+      sqlite.prepare("INSERT INTO window_events (id, title, process_name, captured_at, dwell_seconds, classification) VALUES (?, ?, ?, ?, ?, ?)").run(crypto.randomUUID(), snapshot.title, snapshot.processName, snapshot.capturedAt, snapshot.dwellSeconds, snapshot.classification);
       return snapshot;
     },
     latest(limit = 20): WindowSnapshot[] {
-      return db.select().from(windowEvents).orderBy(windowEvents.capturedAt).limit(limit).all().map((row) => ({
+      return (sqlite.prepare("SELECT title, process_name, captured_at, dwell_seconds, classification FROM window_events ORDER BY captured_at LIMIT ?").all(limit) as unknown as WindowEventRow[]).map((row) => ({
         title: row.title,
-        processName: row.processName,
-        capturedAt: row.capturedAt,
-        dwellSeconds: row.dwellSeconds,
+        processName: row.process_name,
+        capturedAt: row.captured_at,
+        dwellSeconds: row.dwell_seconds,
         classification: row.classification
       }));
     }
@@ -650,50 +669,29 @@ function patchFocusStatus(existing: FocusSession, status: FocusSession["status"]
   };
 }
 
-function rowToTask(row: typeof tasks.$inferSelect): Task {
+function rowToTask(row: TaskRow): Task {
   return {
     id: row.id,
     title: row.title,
     status: row.status,
-    createdAt: row.createdAt,
-    completedAt: row.completedAt
+    createdAt: row.created_at,
+    completedAt: row.completed_at
   };
 }
 
-function toTaskRow(task: Task): typeof tasks.$inferInsert {
-  return {
-    id: task.id,
-    title: task.title,
-    status: task.status,
-    createdAt: task.createdAt,
-    completedAt: task.completedAt
-  };
-}
-
-function rowToFocus(row: typeof focusSessions.$inferSelect): FocusSession {
+function rowToFocus(row: FocusSessionRow): FocusSession {
   return {
     id: row.id,
-    taskId: row.taskId,
+    taskId: row.task_id,
     status: row.status,
-    startedAt: row.startedAt,
-    completedAt: row.completedAt,
-    durationMinutes: row.durationMinutes
-  };
-}
-
-function toFocusRow(session: FocusSession): typeof focusSessions.$inferInsert {
-  return {
-    id: session.id,
-    taskId: session.taskId,
-    status: session.status,
-    startedAt: session.startedAt,
-    completedAt: session.completedAt,
-    durationMinutes: session.durationMinutes
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    durationMinutes: row.duration_minutes
   };
 }
 
 // ── Knowledge Workspace store ──
-// Sync CRUD over better-sqlite3. Timestamps are stored as ISO TEXT and mapped
+// Sync CRUD over sqlite. Timestamps are stored as ISO TEXT and mapped
 // to epoch-ms numbers to match the frontend mock contract. Tags are synced via
 // the note_tags join on note write. The memory fallback is not supported for
 // knowledge (tests use the sqlite :memory: path, which goes through the sqlite
@@ -766,7 +764,7 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
   if (database.kind !== "sqlite") {
     throw new Error("Knowledge store requires a sqlite database (memory fallback unsupported)");
   }
-  const { db, sqlite } = database;
+  const { sqlite } = database;
   const vecState = loadVecExtension(database);
   let vecLoaded = vecState.loaded;
   const vecVersion = vecState.version;
@@ -787,21 +785,20 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
   }
 
   function runInTransaction<T>(operation: () => T): T {
-    return sqlite.transaction(operation)();
+    return withTransaction(sqlite, operation);
   }
 
-  // ── tags helpers ──
   function ensureTagIds(names: string[]): string[] {
     const ids: string[] = [];
     for (const name of names) {
       const trimmed = name.trim();
       if (!trimmed) continue;
-      const existing = db.select().from(knowledgeTags).where(eq(knowledgeTags.name, trimmed)).get();
+      const existing = sqlite.prepare("SELECT id FROM tags WHERE name = ?").get(trimmed) as { id: string } | undefined;
       if (existing) {
         ids.push(existing.id);
       } else {
         const id = crypto.randomUUID();
-        db.insert(knowledgeTags).values({ id, name: trimmed }).run();
+        sqlite.prepare("INSERT INTO tags (id, name) VALUES (?, ?)").run(id, trimmed);
         ids.push(id);
       }
     }
@@ -809,74 +806,44 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
   }
 
   function loadNoteTags(noteId: string): string[] {
-    const rows = db
-      .select({ name: knowledgeTags.name })
-      .from(knowledgeNoteTags)
-      .innerJoin(knowledgeTags, eq(knowledgeNoteTags.tagId, knowledgeTags.id))
-      .where(eq(knowledgeNoteTags.noteId, noteId))
-      .all();
+    const rows = sqlite.prepare("SELECT t.name AS name FROM note_tags n JOIN tags t ON n.tag_id = t.id WHERE n.note_id = ?").all(noteId) as unknown as Array<{ name: string }>;
     return rows.map((r) => r.name);
   }
 
   function syncNoteTags(noteId: string, tags: string[]): void {
-    db.delete(knowledgeNoteTags).where(eq(knowledgeNoteTags.noteId, noteId)).run();
+    sqlite.prepare("DELETE FROM note_tags WHERE note_id = ?").run(noteId);
     const ids = ensureTagIds(tags);
     if (ids.length) {
-      db.insert(knowledgeNoteTags).values(ids.map((tagId) => ({ noteId, tagId }))).run();
+      const stmt = sqlite.prepare("INSERT INTO note_tags (note_id, tag_id) VALUES (?, ?)");
+      for (const tagId of ids) stmt.run(noteId, tagId);
     }
   }
 
-  // ── mappers ──
-  function rowToProject(row: typeof knowledgeProjects.$inferSelect): KnowledgeProject {
+  function rowToProject(row: ProjectRow): KnowledgeProject {
     return {
-      id: row.id,
-      title: row.title,
-      description: row.description ?? undefined,
-      parentId: row.parentId,
-      color: row.color ?? undefined,
-      icon: row.icon ?? undefined,
-      isInbox: row.isInbox,
-      order: row.order,
-      createdAt: isoToMs(row.createdAt),
-      updatedAt: isoToMs(row.updatedAt)
+      id: row.id, title: row.title, description: row.description ?? undefined, parentId: row.parent_id,
+      color: row.color ?? undefined, icon: row.icon ?? undefined, isInbox: !!row.is_inbox, order: row.order,
+      createdAt: isoToMs(row.created_at), updatedAt: isoToMs(row.updated_at)
     };
   }
 
-  function rowToNote(row: typeof knowledgeNotes.$inferSelect): KnowledgeNote {
+  function rowToNote(row: NoteRow): KnowledgeNote {
     return {
-      id: row.id,
-      projectId: row.projectId,
-      title: row.title,
-      body: row.body,
-      tags: loadNoteTags(row.id),
-      createdAt: isoToMs(row.createdAt),
-      updatedAt: isoToMs(row.updatedAt)
+      id: row.id, projectId: row.project_id, title: row.title, body: row.body, tags: loadNoteTags(row.id),
+      createdAt: isoToMs(row.created_at), updatedAt: isoToMs(row.updated_at)
     };
   }
 
-  function rowToColumn(row: typeof knowledgeBoardColumns.$inferSelect): KnowledgeBoardColumn {
-    return {
-      id: row.id,
-      projectId: row.projectId,
-      title: row.title,
-      status: row.status,
-      order: row.order
-    };
+  function rowToColumn(row: BoardColumnRow): KnowledgeBoardColumn {
+    return { id: row.id, projectId: row.project_id, title: row.title, status: row.status, order: row.order };
   }
 
-  function rowToTask(row: typeof knowledgeTasks.$inferSelect): KnowledgeTask {
+  function rowToKnowledgeTask(row: KnowledgeTaskRow): KnowledgeTask {
     return {
-      id: row.id,
-      projectId: row.projectId,
-      columnId: row.columnId ?? "",
-      title: row.title,
-      description: row.description ?? undefined,
-      status: row.status,
-      order: row.order,
-      linkedNoteId: row.linkedNoteId ?? undefined,
-      tags: [],
-      createdAt: isoToMs(row.createdAt),
-      updatedAt: isoToMs(row.updatedAt)
+      id: row.id, projectId: row.project_id, columnId: row.column_id ?? "", title: row.title,
+      description: row.description ?? undefined, status: row.status, order: row.order,
+      linkedNoteId: row.linked_note_id ?? undefined, tags: [],
+      createdAt: isoToMs(row.created_at), updatedAt: isoToMs(row.updated_at)
     };
   }
 
@@ -884,16 +851,15 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     return new Date().toISOString();
   }
 
-  // ── projects ──
   function listProjects(): KnowledgeProject[] {
-    return db.select().from(knowledgeProjects).orderBy(asc(knowledgeProjects.order)).all().map(rowToProject);
+    return (sqlite.prepare('SELECT id, title, description, parent_id, color, icon, is_inbox, "order", created_at, updated_at FROM projects ORDER BY "order"').all() as unknown as ProjectRow[]).map(rowToProject);
   }
   function getProject(id: string): KnowledgeProject | null {
-    const row = db.select().from(knowledgeProjects).where(eq(knowledgeProjects.id, id)).get();
+    const row = sqlite.prepare('SELECT id, title, description, parent_id, color, icon, is_inbox, "order", created_at, updated_at FROM projects WHERE id = ?').get(id) as unknown as ProjectRow | undefined;
     return row ? rowToProject(row) : null;
   }
   function childProjects(parentId: string): KnowledgeProject[] {
-    return db.select().from(knowledgeProjects).where(eq(knowledgeProjects.parentId, parentId)).orderBy(asc(knowledgeProjects.order)).all().map(rowToProject);
+    return (sqlite.prepare('SELECT id, title, description, parent_id, color, icon, is_inbox, "order", created_at, updated_at FROM projects WHERE parent_id = ? ORDER BY "order"').all(parentId) as unknown as ProjectRow[]).map(rowToProject);
   }
   function projectPath(id: string): KnowledgeProject[] {
     const path: KnowledgeProject[] = [];
@@ -909,48 +875,37 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
   function createProject(input: { title: string; parentId?: string | null; description?: string; color?: string; icon?: string; isInbox?: boolean; order?: number }): KnowledgeProject {
     const id = crypto.randomUUID();
     const ts = nowIso();
-    db.insert(knowledgeProjects).values({
-      id,
-      title: input.title.trim(),
-      description: input.description ?? null,
-      parentId: input.parentId ?? null,
-      color: input.color ?? null,
-      icon: input.icon ?? null,
-      isInbox: input.isInbox ?? false,
-      order: input.order ?? 0,
-      createdAt: ts,
-      updatedAt: ts
-    }).run();
+    sqlite.prepare('INSERT INTO projects (id, title, description, parent_id, color, icon, is_inbox, "order", created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      id, input.title.trim(), input.description ?? null, input.parentId ?? null, input.color ?? null, input.icon ?? null,
+      input.isInbox ? 1 : 0, input.order ?? 0, ts, ts
+    );
     return getProject(id)!;
   }
   function upsertImportedProject(project: KnowledgeProject): void {
-    db.insert(knowledgeProjects).values({
-      id: project.id, title: project.title, description: project.description ?? null,
-      parentId: project.parentId, color: project.color ?? null, icon: project.icon ?? null,
-      isInbox: project.isInbox ?? false, order: project.order,
-      createdAt: new Date(project.createdAt).toISOString(), updatedAt: new Date(project.updatedAt).toISOString()
-    }).onConflictDoUpdate({ target: knowledgeProjects.id, set: {
-      title: project.title, description: project.description ?? null, parentId: project.parentId,
-      color: project.color ?? null, icon: project.icon ?? null, isInbox: project.isInbox ?? false,
-      order: project.order, updatedAt: new Date(project.updatedAt).toISOString()
-    }}).run();
+    sqlite.prepare(`INSERT INTO projects (id, title, description, parent_id, color, icon, is_inbox, "order", created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET title=excluded.title, description=excluded.description, parent_id=excluded.parent_id,
+        color=excluded.color, icon=excluded.icon, is_inbox=excluded.is_inbox, "order"=excluded."order", updated_at=excluded.updated_at`).run(
+      project.id, project.title, project.description ?? null, project.parentId, project.color ?? null, project.icon ?? null,
+      project.isInbox ? 1 : 0, project.order, new Date(project.createdAt).toISOString(), new Date(project.updatedAt).toISOString()
+    );
   }
   function updateProject(id: string, patch: Partial<Pick<KnowledgeProject, "title" | "description" | "color" | "icon" | "parentId" | "order">>): KnowledgeProject | null {
-    const existing = db.select().from(knowledgeProjects).where(eq(knowledgeProjects.id, id)).get();
+    const existing = sqlite.prepare('SELECT id, title, description, parent_id, color, icon, is_inbox, "order", created_at, updated_at FROM projects WHERE id = ?').get(id) as unknown as ProjectRow | undefined;
     if (!existing) return null;
-    db.update(knowledgeProjects).set({
-      title: patch.title?.trim() ?? existing.title,
-      description: patch.description !== undefined ? patch.description : existing.description,
-      color: patch.color !== undefined ? patch.color : existing.color,
-      icon: patch.icon !== undefined ? patch.icon : existing.icon,
-      parentId: patch.parentId !== undefined ? patch.parentId : existing.parentId,
-      order: patch.order ?? existing.order,
-      updatedAt: nowIso()
-    }).where(eq(knowledgeProjects.id, id)).run();
+    sqlite.prepare('UPDATE projects SET title = ?, description = ?, color = ?, icon = ?, parent_id = ?, "order" = ?, updated_at = ? WHERE id = ?').run(
+      patch.title?.trim() ?? existing.title,
+      patch.description !== undefined ? patch.description : existing.description,
+      patch.color !== undefined ? patch.color : existing.color,
+      patch.icon !== undefined ? patch.icon : existing.icon,
+      patch.parentId !== undefined ? patch.parentId : existing.parent_id,
+      patch.order ?? existing.order,
+      nowIso(), id
+    );
     return getProject(id);
   }
   function deleteProject(id: string): void {
-    sqlite.transaction(() => {
+    withTransaction(sqlite, () => {
       const projectIds: string[] = [];
       const visited = new Set<string>();
       const collect = (projectId: string) => {
@@ -963,291 +918,215 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
       for (const projectId of projectIds) {
         for (const note of notesForProject(projectId)) {
           removeIndex("note", note.id);
-          db.delete(knowledgeNoteTags).where(eq(knowledgeNoteTags.noteId, note.id)).run();
+          sqlite.prepare("DELETE FROM note_tags WHERE note_id = ?").run(note.id);
         }
         for (const task of tasksForProject(projectId)) removeIndex("task", task.id);
-        db.delete(knowledgeNotes).where(eq(knowledgeNotes.projectId, projectId)).run();
-        db.delete(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.projectId, projectId)).run();
-        db.delete(knowledgeTasks).where(eq(knowledgeTasks.projectId, projectId)).run();
-        db.delete(knowledgeProjects).where(eq(knowledgeProjects.id, projectId)).run();
+        sqlite.prepare("DELETE FROM notes WHERE project_id = ?").run(projectId);
+        sqlite.prepare("DELETE FROM board_columns WHERE project_id = ?").run(projectId);
+        sqlite.prepare("DELETE FROM knowledge_tasks WHERE project_id = ?").run(projectId);
+        sqlite.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
       }
-    })();
+    });
   }
   function ensureInbox(): KnowledgeProject {
-    const existing = db.select().from(knowledgeProjects).where(eq(knowledgeProjects.isInbox, true)).get();
-    if (existing) return rowToProject(existing);
+    const existing = sqlite.prepare("SELECT id FROM projects WHERE is_inbox = 1").get() as { id: string } | undefined;
+    if (existing) return getProject(existing.id)!;
     return createProject({ title: "收件箱", description: "临时想法与未分类内容", color: "#6b7280", isInbox: true, order: 0 });
   }
 
-  // ── notes ──
   function notesForProject(projectId: string): KnowledgeNote[] {
-    return db.select().from(knowledgeNotes).where(eq(knowledgeNotes.projectId, projectId)).orderBy(asc(knowledgeNotes.updatedAt)).all().map(rowToNote);
+    return (sqlite.prepare("SELECT id, project_id, title, body, created_at, updated_at FROM notes WHERE project_id = ? ORDER BY updated_at").all(projectId) as unknown as NoteRow[]).map(rowToNote);
   }
   function getNote(id: string): KnowledgeNote | null {
-    const row = db.select().from(knowledgeNotes).where(eq(knowledgeNotes.id, id)).get();
+    const row = sqlite.prepare("SELECT id, project_id, title, body, created_at, updated_at FROM notes WHERE id = ?").get(id) as unknown as NoteRow | undefined;
     return row ? rowToNote(row) : null;
   }
   function createNote(projectId: string, title: string): KnowledgeNote {
     const id = crypto.randomUUID();
     const ts = nowIso();
-    db.insert(knowledgeNotes).values({
-      id,
-      projectId,
-      title: title.trim() || "无标题笔记",
-      body: "",
-      createdAt: ts,
-      updatedAt: ts
-    }).run();
+    sqlite.prepare("INSERT INTO notes (id, project_id, title, body, created_at, updated_at) VALUES (?, ?, ?, '', ?, ?)").run(id, projectId, title.trim() || "无标题笔记", ts, ts);
     return getNote(id)!;
   }
   function upsertImportedNote(note: KnowledgeNote): void {
-    db.insert(knowledgeNotes).values({
-      id: note.id, projectId: note.projectId, title: note.title, body: note.body,
-      createdAt: new Date(note.createdAt).toISOString(), updatedAt: new Date(note.updatedAt).toISOString()
-    }).onConflictDoUpdate({ target: knowledgeNotes.id, set: {
-      projectId: note.projectId, title: note.title, body: note.body,
-      updatedAt: new Date(note.updatedAt).toISOString()
-    }}).run();
+    sqlite.prepare(`INSERT INTO notes (id, project_id, title, body, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id, title=excluded.title, body=excluded.body, updated_at=excluded.updated_at`).run(
+      note.id, note.projectId, note.title, note.body, new Date(note.createdAt).toISOString(), new Date(note.updatedAt).toISOString()
+    );
     syncNoteTags(note.id, note.tags);
   }
   function updateNote(id: string, patch: Partial<Pick<KnowledgeNote, "title" | "body" | "tags">>): KnowledgeNote | null {
-    const existing = db.select().from(knowledgeNotes).where(eq(knowledgeNotes.id, id)).get();
+    const existing = sqlite.prepare("SELECT id, project_id, title, body, created_at, updated_at FROM notes WHERE id = ?").get(id) as unknown as NoteRow | undefined;
     if (!existing) return null;
-    db.update(knowledgeNotes).set({
-      title: patch.title !== undefined ? patch.title.trim() : existing.title,
-      body: patch.body !== undefined ? patch.body : existing.body,
-      updatedAt: nowIso()
-    }).where(eq(knowledgeNotes.id, id)).run();
+    sqlite.prepare("UPDATE notes SET title = ?, body = ?, updated_at = ? WHERE id = ?").run(
+      patch.title !== undefined ? patch.title.trim() : existing.title,
+      patch.body !== undefined ? patch.body : existing.body,
+      nowIso(), id
+    );
     if (patch.tags !== undefined) syncNoteTags(id, patch.tags);
     return getNote(id);
   }
   function deleteNote(id: string): void {
-    sqlite.transaction(() => {
+    withTransaction(sqlite, () => {
       removeIndex("note", id);
-      db.delete(knowledgeNoteTags).where(eq(knowledgeNoteTags.noteId, id)).run();
-      db.delete(knowledgeNotes).where(eq(knowledgeNotes.id, id)).run();
-    })();
+      sqlite.prepare("DELETE FROM note_tags WHERE note_id = ?").run(id);
+      sqlite.prepare("DELETE FROM notes WHERE id = ?").run(id);
+    });
   }
   function backlinksFor(targetId: string): { sourceType: "note" | "task"; sourceId: string }[] {
-    // Basic [[target]] scan; upgraded to FTS in Phase 2.
     const pattern = `%[[${targetId}]%`;
-    const notes = db
-      .select({ id: knowledgeNotes.id })
-      .from(knowledgeNotes)
-      .where(like(knowledgeNotes.body, pattern))
-      .all()
-      .map((r) => ({ sourceType: "note" as const, sourceId: r.id }));
-    return notes;
+    const rows = sqlite.prepare("SELECT id FROM notes WHERE body LIKE ?").all(pattern) as unknown as Array<{ id: string }>;
+    return rows.map((r) => ({ sourceType: "note" as const, sourceId: r.id }));
   }
 
-  // ── columns ──
   function columnsForProject(projectId: string): KnowledgeBoardColumn[] {
-    return db.select().from(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.projectId, projectId)).orderBy(asc(knowledgeBoardColumns.order)).all().map(rowToColumn);
+    return (sqlite.prepare('SELECT id, project_id, title, status, "order" FROM board_columns WHERE project_id = ? ORDER BY "order"').all(projectId) as unknown as BoardColumnRow[]).map(rowToColumn);
   }
   function createColumn(projectId: string, input: { title: string; status: KnowledgeTaskStatus; order: number }): KnowledgeBoardColumn {
     const id = crypto.randomUUID();
-    db.insert(knowledgeBoardColumns).values({ id, projectId, title: input.title.trim(), status: input.status, order: input.order }).run();
-    const row = db.select().from(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.id, id)).get();
-    return rowToColumn(row!);
+    sqlite.prepare('INSERT INTO board_columns (id, project_id, title, status, "order") VALUES (?, ?, ?, ?, ?)').run(id, projectId, input.title.trim(), input.status, input.order);
+    const row = sqlite.prepare('SELECT id, project_id, title, status, "order" FROM board_columns WHERE id = ?').get(id) as unknown as BoardColumnRow;
+    return rowToColumn(row);
   }
   function upsertImportedColumn(column: KnowledgeBoardColumn): void {
-    db.insert(knowledgeBoardColumns).values({
-      id: column.id, projectId: column.projectId, title: column.title,
-      status: column.status, order: column.order
-    }).onConflictDoUpdate({ target: knowledgeBoardColumns.id, set: {
-      projectId: column.projectId, title: column.title, status: column.status, order: column.order
-    }}).run();
+    sqlite.prepare(`INSERT INTO board_columns (id, project_id, title, status, "order")
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id, title=excluded.title, status=excluded.status, "order"=excluded."order"`).run(
+      column.id, column.projectId, column.title, column.status, column.order
+    );
   }
   function updateColumn(id: string, patch: Partial<Pick<KnowledgeBoardColumn, "title" | "status" | "order">>): KnowledgeBoardColumn | null {
-    const existing = db.select().from(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.id, id)).get();
+    const existing = sqlite.prepare('SELECT id, project_id, title, status, "order" FROM board_columns WHERE id = ?').get(id) as unknown as BoardColumnRow | undefined;
     if (!existing) return null;
-    db.update(knowledgeBoardColumns).set({
-      title: patch.title?.trim() ?? existing.title,
-      status: patch.status ?? existing.status,
-      order: patch.order ?? existing.order
-    }).where(eq(knowledgeBoardColumns.id, id)).run();
-    const row = db.select().from(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.id, id)).get();
+    sqlite.prepare('UPDATE board_columns SET title = ?, status = ?, "order" = ? WHERE id = ?').run(
+      patch.title?.trim() ?? existing.title,
+      patch.status ?? existing.status,
+      patch.order ?? existing.order,
+      id
+    );
+    const row = sqlite.prepare('SELECT id, project_id, title, status, "order" FROM board_columns WHERE id = ?').get(id) as unknown as BoardColumnRow | undefined;
     return row ? rowToColumn(row) : null;
   }
   function deleteColumn(id: string): void {
-    // unhook tasks in this column rather than deleting them
-    db.update(knowledgeTasks).set({ columnId: null }).where(eq(knowledgeTasks.columnId, id)).run();
-    db.delete(knowledgeBoardColumns).where(eq(knowledgeBoardColumns.id, id)).run();
+    sqlite.prepare("UPDATE knowledge_tasks SET column_id = NULL WHERE column_id = ?").run(id);
+    sqlite.prepare("DELETE FROM board_columns WHERE id = ?").run(id);
   }
 
-  // ── tasks ──
   function tasksForProject(projectId: string): KnowledgeTask[] {
-    return db.select().from(knowledgeTasks).where(eq(knowledgeTasks.projectId, projectId)).orderBy(asc(knowledgeTasks.order)).all().map(rowToTask);
+    return (sqlite.prepare('SELECT id, project_id, column_id, title, description, status, "order", linked_note_id, created_at, updated_at FROM knowledge_tasks WHERE project_id = ? ORDER BY "order"').all(projectId) as unknown as KnowledgeTaskRow[]).map(rowToKnowledgeTask);
   }
   function createTask(projectId: string, columnId: string, title: string): KnowledgeTask {
     const id = crypto.randomUUID();
     const ts = nowIso();
-    db.insert(knowledgeTasks).values({
-      id,
-      projectId,
-      columnId: columnId || null,
-      title: title.trim(),
-      status: "todo",
-      order: 0,
-      linkedNoteId: null,
-      createdAt: ts,
-      updatedAt: ts
-    }).run();
-    return rowToTask(db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, id)).get()!);
+    sqlite.prepare('INSERT INTO knowledge_tasks (id, project_id, column_id, title, status, "order", linked_note_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      id, projectId, columnId || null, title.trim(), "todo", 0, null, ts, ts
+    );
+    const row = sqlite.prepare('SELECT id, project_id, column_id, title, description, status, "order", linked_note_id, created_at, updated_at FROM knowledge_tasks WHERE id = ?').get(id) as unknown as KnowledgeTaskRow;
+    return rowToKnowledgeTask(row);
   }
   function upsertImportedTask(task: KnowledgeTask): void {
-    db.insert(knowledgeTasks).values({
-      id: task.id, projectId: task.projectId, columnId: task.columnId || null,
-      title: task.title, description: task.description ?? null, status: task.status,
-      order: task.order, linkedNoteId: task.linkedNoteId ?? null,
-      createdAt: new Date(task.createdAt).toISOString(), updatedAt: new Date(task.updatedAt).toISOString()
-    }).onConflictDoUpdate({ target: knowledgeTasks.id, set: {
-      projectId: task.projectId, columnId: task.columnId || null, title: task.title,
-      description: task.description ?? null, status: task.status, order: task.order,
-      linkedNoteId: task.linkedNoteId ?? null, updatedAt: new Date(task.updatedAt).toISOString()
-    }}).run();
+    sqlite.prepare(`INSERT INTO knowledge_tasks (id, project_id, column_id, title, description, status, "order", linked_note_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id, column_id=excluded.column_id, title=excluded.title,
+        description=excluded.description, status=excluded.status, "order"=excluded."order", linked_note_id=excluded.linked_note_id, updated_at=excluded.updated_at`).run(
+      task.id, task.projectId, task.columnId || null, task.title, task.description ?? null, task.status, task.order, task.linkedNoteId ?? null,
+      new Date(task.createdAt).toISOString(), new Date(task.updatedAt).toISOString()
+    );
   }
   function updateTask(id: string, patch: { title?: string; description?: string; status?: KnowledgeTaskStatus; columnId?: string; order?: number; linkedNoteId?: string | null }): KnowledgeTask | null {
-    const existing = db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, id)).get();
+    const existing = sqlite.prepare('SELECT id, project_id, column_id, title, description, status, "order", linked_note_id, created_at, updated_at FROM knowledge_tasks WHERE id = ?').get(id) as unknown as KnowledgeTaskRow | undefined;
     if (!existing) return null;
-    db.update(knowledgeTasks).set({
-      title: patch.title !== undefined ? patch.title.trim() : existing.title,
-      description: patch.description !== undefined ? patch.description : existing.description,
-      status: patch.status ?? existing.status,
-      columnId: patch.columnId !== undefined ? (patch.columnId || null) : existing.columnId,
-      order: patch.order ?? existing.order,
-      linkedNoteId: patch.linkedNoteId !== undefined ? patch.linkedNoteId : existing.linkedNoteId,
-      updatedAt: nowIso()
-    }).where(eq(knowledgeTasks.id, id)).run();
-    const row = db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, id)).get();
-    return row ? rowToTask(row) : null;
+    sqlite.prepare('UPDATE knowledge_tasks SET title = ?, description = ?, status = ?, column_id = ?, "order" = ?, linked_note_id = ?, updated_at = ? WHERE id = ?').run(
+      patch.title !== undefined ? patch.title.trim() : existing.title,
+      patch.description !== undefined ? patch.description : existing.description,
+      patch.status ?? existing.status,
+      patch.columnId !== undefined ? (patch.columnId || null) : existing.column_id,
+      patch.order ?? existing.order,
+      patch.linkedNoteId !== undefined ? patch.linkedNoteId : existing.linked_note_id,
+      nowIso(), id
+    );
+    const row = sqlite.prepare('SELECT id, project_id, column_id, title, description, status, "order", linked_note_id, created_at, updated_at FROM knowledge_tasks WHERE id = ?').get(id) as unknown as KnowledgeTaskRow | undefined;
+    return row ? rowToKnowledgeTask(row) : null;
   }
   function deleteTask(id: string): void {
-    sqlite.transaction(() => {
+    withTransaction(sqlite, () => {
       removeIndex("task", id);
-      db.delete(knowledgeTasks).where(eq(knowledgeTasks.id, id)).run();
-    })();
-  }
-  function moveTask(taskId: string, targetColumnId: string, targetIndex: number): void {
-    const task = db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, taskId)).get();
-    if (!task) return;
-    const projectId = task.projectId;
-    // shift siblings in target column then place
-    const siblings = db.select().from(knowledgeTasks)
-      .where(and(eq(knowledgeTasks.projectId, projectId), eq(knowledgeTasks.columnId, targetColumnId)))
-      .orderBy(asc(knowledgeTasks.order)).all().filter((t) => t.id !== taskId);
-    const clamped = Math.max(0, Math.min(targetIndex, siblings.length));
-    siblings.splice(clamped, 0, task);
-    siblings.forEach((t, idx) => {
-      db.update(knowledgeTasks).set({ columnId: targetColumnId, order: idx }).where(eq(knowledgeTasks.id, t.id)).run();
+      sqlite.prepare("DELETE FROM knowledge_tasks WHERE id = ?").run(id);
     });
   }
+  function moveTask(taskId: string, targetColumnId: string, targetIndex: number): void {
+    const task = sqlite.prepare("SELECT id, project_id, column_id FROM knowledge_tasks WHERE id = ?").get(taskId) as { id: string; project_id: string; column_id: string | null } | undefined;
+    if (!task) return;
+    const projectId = task.project_id;
+    const siblings = (sqlite.prepare('SELECT id, project_id, column_id, title, description, status, "order", linked_note_id, created_at, updated_at FROM knowledge_tasks WHERE project_id = ? AND column_id = ? ORDER BY "order"').all(projectId, targetColumnId) as unknown as KnowledgeTaskRow[]).filter((t) => t.id !== taskId);
+    const clamped = Math.max(0, Math.min(targetIndex, siblings.length));
+    siblings.splice(clamped, 0, { ...task, column_id: targetColumnId } as KnowledgeTaskRow);
+    const stmt = sqlite.prepare('UPDATE knowledge_tasks SET column_id = ?, "order" = ? WHERE id = ?');
+    siblings.forEach((t, idx) => stmt.run(targetColumnId, idx, t.id));
+  }
 
-  // ── indexing (Phase 2): chunk dedup + FTS5 sync ──
-  // Re-chunks a note, replacing its existing chunks. content-hash dedup: chunks
-  // whose hash already exists for this source are reused (skipping re-embed in
-  // Phase 3). FTS5 mirror is written synchronously; embedding stays 'pending'.
   function reindexNote(note: KnowledgeNote, chunk: (text: string) => { content: string; contentHash: string }[]): void {
     const text = note.body ? `${note.title}\n\n${note.body}` : note.title;
     const pieces = chunk(text);
-    sqlite.transaction(() => {
+    withTransaction(sqlite, () => {
       removeIndex("note", note.id);
       const now = nowIso();
+      const insertChunk = sqlite.prepare("INSERT INTO knowledge_chunks (id, project_id, source_type, source_id, ordinal, content, content_hash, embedding_model, embedding_dimensions, index_status, index_error, retry_count, next_retry_at, updated_at) VALUES (?, ?, 'note', ?, ?, ?, ?, NULL, NULL, 'pending', NULL, 0, NULL, ?)");
+      const insertFts = sqlite.prepare("INSERT INTO knowledge_chunks_fts (chunk_id, content, project_id, source_type, source_id, content_hash) VALUES (?, ?, ?, 'note', ?, ?)");
       pieces.forEach((piece, ordinal) => {
         const chunkId = crypto.randomUUID();
-        db.insert(knowledgeChunks).values({
-          id: chunkId, projectId: note.projectId, sourceType: "note", sourceId: note.id,
-          ordinal, content: piece.content, contentHash: piece.contentHash,
-          embeddingModel: null, embeddingDimensions: null, indexStatus: "pending",
-          indexError: null, retryCount: 0, nextRetryAt: null, updatedAt: now
-        }).run();
-        sqlite.prepare(`INSERT INTO knowledge_chunks_fts
-          (chunk_id, content, project_id, source_type, source_id, content_hash) VALUES (?, ?, ?, 'note', ?, ?)`)
-          .run(chunkId, piece.content, note.projectId, note.id, piece.contentHash);
+        insertChunk.run(chunkId, note.projectId, note.id, ordinal, piece.content, piece.contentHash, now);
+        insertFts.run(chunkId, piece.content, note.projectId, note.id, piece.contentHash);
       });
-    })();
+    });
   }
 
   function reindexTask(task: KnowledgeTask, chunk: (text: string) => { content: string; contentHash: string }[]): void {
     const text = task.description ? `${task.title}\n\n${task.description}` : task.title;
     const pieces = chunk(text);
-    sqlite.transaction(() => {
+    withTransaction(sqlite, () => {
       removeIndex("task", task.id);
       const now = nowIso();
+      const insertChunk = sqlite.prepare("INSERT INTO knowledge_chunks (id, project_id, source_type, source_id, ordinal, content, content_hash, embedding_model, embedding_dimensions, index_status, index_error, retry_count, next_retry_at, updated_at) VALUES (?, ?, 'task', ?, ?, ?, ?, NULL, NULL, 'pending', NULL, 0, NULL, ?)");
+      const insertFts = sqlite.prepare("INSERT INTO knowledge_chunks_fts (chunk_id, content, project_id, source_type, source_id, content_hash) VALUES (?, ?, ?, 'task', ?, ?)");
       pieces.forEach((piece, ordinal) => {
         const chunkId = crypto.randomUUID();
-        db.insert(knowledgeChunks).values({
-          id: chunkId, projectId: task.projectId, sourceType: "task", sourceId: task.id,
-          ordinal, content: piece.content, contentHash: piece.contentHash,
-          embeddingModel: null, embeddingDimensions: null, indexStatus: "pending",
-          indexError: null, retryCount: 0, nextRetryAt: null, updatedAt: now
-        }).run();
-        sqlite.prepare(`INSERT INTO knowledge_chunks_fts
-          (chunk_id, content, project_id, source_type, source_id, content_hash) VALUES (?, ?, ?, 'task', ?, ?)`)
-          .run(chunkId, piece.content, task.projectId, task.id, piece.contentHash);
+        insertChunk.run(chunkId, task.projectId, task.id, ordinal, piece.content, piece.contentHash, now);
+        insertFts.run(chunkId, piece.content, task.projectId, task.id, piece.contentHash);
       });
-    })();
+    });
   }
 
   function removeIndex(sourceType: "note" | "task", sourceId: string): void {
-    // Collect chunk ids so we can also drop their vec0 rows before deleting.
-    const chunkIds = db.select({ id: knowledgeChunks.id })
-      .from(knowledgeChunks)
-      .where(and(eq(knowledgeChunks.sourceType, sourceType), eq(knowledgeChunks.sourceId, sourceId)))
-      .all().map((r) => r.id);
+    const chunkIds = (sqlite.prepare("SELECT id FROM knowledge_chunks WHERE source_type = ? AND source_id = ?").all(sourceType, sourceId) as unknown as Array<{ id: string }>).map((r) => r.id);
     for (const cid of chunkIds) delVecChunk(cid);
-    // FTS5 delete-then-reinsert: drop matching FTS rows, then the chunk rows.
-    sqlite.exec(
-      `DELETE FROM knowledge_chunks_fts WHERE source_type = ${sqlStr(sourceType)} AND source_id = ${sqlStr(sourceId)}`
-    );
-    db.delete(knowledgeChunks)
-      .where(and(eq(knowledgeChunks.sourceType, sourceType), eq(knowledgeChunks.sourceId, sourceId)))
-      .run();
+    sqlite.exec(`DELETE FROM knowledge_chunks_fts WHERE source_type = ${sqlStr(sourceType)} AND source_id = ${sqlStr(sourceId)}`);
+    sqlite.prepare("DELETE FROM knowledge_chunks WHERE source_type = ? AND source_id = ?").run(sourceType, sourceId);
   }
 
   function searchFts(projectId: string | null, query: string, limit: number): KnowledgeSource[] {
-    // trigram tokenizer indexes 3-grams, so CJK queries shorter than 3 chars
-    // (e.g. "向量") won't MATCH reliably. Use FTS5 MATCH for BM25 ranking when
-    // the query is long enough, and fall back to a LIKE substring scan for
-    // short queries so 2-char Chinese terms still hit.
     const terms = extractTerms(query);
     if (!terms.length) return [];
     const useMatch = terms.every((t) => [...t].length >= 3);
     const cap = Math.max(1, Math.min(limit, 50));
     const projectClause = projectId ? ` AND k.project_id = ${sqlStr(projectId)}` : "";
-
     let sql: string;
     if (useMatch) {
       const ftsQuery = terms.map((t) => `"${t.replace(/"/g, "")}"*`).join(" OR ");
-      sql = `SELECT k.chunk_id, k.source_type, k.source_id, k.project_id, k.content,
-                bm25(knowledge_chunks_fts) AS rank
-         FROM knowledge_chunks_fts k
-         WHERE k.content MATCH ${sqlStr(ftsQuery)}${projectClause}
-         ORDER BY rank LIMIT ${cap}`;
+      sql = `SELECT k.chunk_id, k.source_type, k.source_id, k.project_id, k.content, bm25(knowledge_chunks_fts) AS rank FROM knowledge_chunks_fts k WHERE k.content MATCH ${sqlStr(ftsQuery)}${projectClause} ORDER BY rank LIMIT ${cap}`;
     } else {
-      // LIKE fallback for short CJK terms; rank by position (earlier = better)
       const likeTerms = terms.map((t) => `k.content LIKE ${sqlStr(`%${t.replace(/[%_]/g, "\\$&")}%`)} ESCAPE '\\'`);
-      sql = `SELECT k.chunk_id, k.source_type, k.source_id, k.project_id, k.content, 0 AS rank
-         FROM knowledge_chunks_fts k
-         WHERE (${likeTerms.join(" OR ")})${projectClause}
-         LIMIT ${cap}`;
+      sql = `SELECT k.chunk_id, k.source_type, k.source_id, k.project_id, k.content, 0 AS rank FROM knowledge_chunks_fts k WHERE (${likeTerms.join(" OR ")})${projectClause} LIMIT ${cap}`;
     }
-    const rows = sqlite.prepare(sql).all() as Array<{
-      chunk_id: string; source_type: "note" | "task"; source_id: string; project_id: string; content: string; rank: number;
-    }>;
-    // resolve titles + dedup by source (return best chunk per source)
+    const rows = sqlite.prepare(sql).all() as unknown as Array<{ chunk_id: string; source_type: "note" | "task"; source_id: string; project_id: string; content: string; rank: number }>;
     const bySource = new Map<string, KnowledgeSource>();
     for (const row of rows) {
       const key = `${row.source_type}:${row.source_id}`;
       if (bySource.has(key)) continue;
-      const title = resolveSourceTitle(row.source_type, row.source_id);
       bySource.set(key, {
-        sourceType: row.source_type,
-        sourceId: row.source_id,
-        projectId: row.project_id,
-        title,
-        excerpt: deriveExcerpt(row.content),
-        chunkId: row.chunk_id
+        sourceType: row.source_type, sourceId: row.source_id, projectId: row.project_id,
+        title: resolveSourceTitle(row.source_type, row.source_id),
+        excerpt: deriveExcerpt(row.content), chunkId: row.chunk_id
       });
     }
     return [...bySource.values()];
@@ -1255,17 +1134,17 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
 
   function getChunkContents(chunkIds: string[]): Map<string, string> {
     if (!chunkIds.length) return new Map();
-    const rows = db.select({ id: knowledgeChunks.id, content: knowledgeChunks.content })
-      .from(knowledgeChunks).where(inArray(knowledgeChunks.id, chunkIds)).all();
+    const placeholders = chunkIds.map(() => "?").join(",");
+    const rows = sqlite.prepare(`SELECT id, content FROM knowledge_chunks WHERE id IN (${placeholders})`).all(...chunkIds) as unknown as Array<{ id: string; content: string }>;
     return new Map(rows.map((row) => [row.id, row.content]));
   }
 
   function resolveSourceTitle(sourceType: "note" | "task", sourceId: string): string {
     if (sourceType === "note") {
-      const row = db.select().from(knowledgeNotes).where(eq(knowledgeNotes.id, sourceId)).get();
+      const row = sqlite.prepare("SELECT title FROM notes WHERE id = ?").get(sourceId) as { title?: string } | undefined;
       return row?.title ?? "未命名笔记";
     }
-    const row = db.select().from(knowledgeTasks).where(eq(knowledgeTasks.id, sourceId)).get();
+    const row = sqlite.prepare("SELECT title FROM knowledge_tasks WHERE id = ?").get(sourceId) as { title?: string } | undefined;
     return row?.title ?? "未命名任务";
   }
 
@@ -1275,52 +1154,26 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
   }
 
   function markStale(embeddingModel?: string): void {
-    // mark indexed chunks stale when the embedding model changes (Phase 3)
     if (embeddingModel) {
-      db.update(knowledgeChunks)
-        .set({ indexStatus: "stale" })
-        .where(and(
-          eq(knowledgeChunks.indexStatus, "indexed"),
-          or(isNull(knowledgeChunks.embeddingModel), ne(knowledgeChunks.embeddingModel, embeddingModel))
-        ))
-        .run();
+      sqlite.prepare("UPDATE knowledge_chunks SET index_status = 'stale' WHERE index_status = 'indexed' AND (embedding_model IS NULL OR embedding_model != ?)").run(embeddingModel);
     } else {
-      db.update(knowledgeChunks).set({ indexStatus: "stale" }).where(eq(knowledgeChunks.indexStatus, "indexed")).run();
+      sqlite.exec("UPDATE knowledge_chunks SET index_status = 'stale' WHERE index_status = 'indexed'");
     }
   }
 
   function getIndexStatus(providerConfigured: boolean): IndexStatus {
     const countBy = (status: string): number => {
-      const row = sqlite.prepare(
-        `SELECT COUNT(*) AS n FROM knowledge_chunks WHERE index_status = ${sqlStr(status)}`
-      ).get() as { n: number } | undefined;
+      const row = sqlite.prepare("SELECT COUNT(*) AS n FROM knowledge_chunks WHERE index_status = ?").get(status) as { n: number } | undefined;
       return row?.n ?? 0;
     };
     const pending = countBy("pending");
     const stale = countBy("stale");
-    const retrying = (sqlite.prepare(
-      "SELECT COUNT(*) AS n FROM knowledge_chunks WHERE index_status = 'failed' AND retry_count < 3 AND next_retry_at IS NOT NULL"
-    ).get() as { n: number }).n;
+    const retrying = (sqlite.prepare("SELECT COUNT(*) AS n FROM knowledge_chunks WHERE index_status = 'failed' AND retry_count < 3 AND next_retry_at IS NOT NULL").get() as { n: number }).n;
     const hybridCapable = vecLoaded && providerConfigured;
-    const mode: IndexStatus["mode"] = hybridCapable
-      ? pending + stale + retrying > 0
-        ? "indexing"
-        : "hybrid"
-      : "fts-only";
-    return {
-      mode,
-      pending,
-      failed: countBy("failed"),
-      stale,
-      retrying,
-      providerConfigured,
-      vectorExtensionAvailable: vecLoaded,
-      vecVersion,
-      vecLoadError: vecLoaded ? undefined : vecLoadError
-    };
+    const mode: IndexStatus["mode"] = hybridCapable ? (pending + stale + retrying > 0 ? "indexing" : "hybrid") : "fts-only";
+    return { mode, pending, failed: countBy("failed"), stale, retrying, providerConfigured, vectorExtensionAvailable: vecLoaded, vecVersion, vecLoadError: vecLoaded ? undefined : vecLoadError };
   }
 
-  // ── vector indexing (Phase 3) ──
   function ensureVecTable(dim: number): boolean {
     if (!vecLoaded) return false;
     if (vecDim === null) {
@@ -1331,22 +1184,11 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
         sqlite.exec("DROP TABLE knowledge_chunks_vec");
         markStale();
       }
-      sqlite.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_vec USING vec0(
-        chunk_id TEXT PRIMARY KEY,
-        project_id TEXT PARTITION KEY,
-        embedding FLOAT[${dim}]
-      )`);
+      sqlite.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_vec USING vec0(chunk_id TEXT PRIMARY KEY, project_id TEXT PARTITION KEY, embedding FLOAT[${dim}])`);
       vecDim = dim;
     } else if (vecDim !== dim) {
-      // dimension changed (model swap) → drop, recreate, force full re-embed
       sqlite.exec("DROP TABLE IF EXISTS knowledge_chunks_vec");
-      sqlite.exec(
-        `CREATE VIRTUAL TABLE knowledge_chunks_vec USING vec0(
-          chunk_id TEXT PRIMARY KEY,
-          project_id TEXT PARTITION KEY,
-          embedding FLOAT[${dim}]
-        )`
-      );
+      sqlite.exec(`CREATE VIRTUAL TABLE knowledge_chunks_vec USING vec0(chunk_id TEXT PRIMARY KEY, project_id TEXT PARTITION KEY, embedding FLOAT[${dim}])`);
       vecDim = dim;
       markStale();
     }
@@ -1355,9 +1197,7 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
 
   function putVecChunk(chunkId: string, projectId: string, vec: number[]): void {
     if (!vecLoaded || vecDim === null) return;
-    sqlite.prepare(
-      "INSERT OR REPLACE INTO knowledge_chunks_vec (chunk_id, project_id, embedding) VALUES (?, ?, ?)"
-    ).run(chunkId, projectId, toVecBuffer(vec));
+    sqlite.prepare("INSERT OR REPLACE INTO knowledge_chunks_vec (chunk_id, project_id, embedding) VALUES (?, ?, ?)").run(chunkId, projectId, toVecBuffer(vec));
   }
 
   function delVecChunk(chunkId: string): void {
@@ -1366,127 +1206,68 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     if (exists) sqlite.prepare("DELETE FROM knowledge_chunks_vec WHERE chunk_id = ?").run(chunkId);
   }
 
-  function searchKnn(
-    queryVec: number[],
-    k: number,
-    projectId: string | null
-  ): KnowledgeSource[] {
+  function searchKnn(queryVec: number[], k: number, projectId: string | null): KnowledgeSource[] {
     if (!vecLoaded || vecDim === null || queryVec.length !== vecDim) return [];
     const cap = Math.max(1, Math.min(k, 50));
     const rows = projectId
-      ? sqlite.prepare(`SELECT v.chunk_id AS chunk_id, v.distance AS distance
-          FROM knowledge_chunks_vec v
-          WHERE v.embedding MATCH ? AND v.project_id = ? AND k = ?
-          ORDER BY v.distance`).all(toVecBuffer(queryVec), projectId, cap) as Array<{ chunk_id: string; distance: number }>
-      : sqlite.prepare(`SELECT v.chunk_id AS chunk_id, v.distance AS distance
-          FROM knowledge_chunks_vec v
-          WHERE v.embedding MATCH ? AND k = ?
-          ORDER BY v.distance`).all(toVecBuffer(queryVec), cap) as Array<{ chunk_id: string; distance: number }>;
+      ? sqlite.prepare("SELECT v.chunk_id AS chunk_id, v.distance AS distance FROM knowledge_chunks_vec v WHERE v.embedding MATCH ? AND v.project_id = ? AND k = ? ORDER BY v.distance").all(toVecBuffer(queryVec), projectId, cap) as unknown as Array<{ chunk_id: string; distance: number }>
+      : sqlite.prepare("SELECT v.chunk_id AS chunk_id, v.distance AS distance FROM knowledge_chunks_vec v WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance").all(toVecBuffer(queryVec), cap) as unknown as Array<{ chunk_id: string; distance: number }>;
     if (!rows.length) return [];
     const ids = rows.map((r) => r.chunk_id);
-    const chunkRows = db.select().from(knowledgeChunks).where(inArray(knowledgeChunks.id, ids)).all();
+    const placeholders = ids.map(() => "?").join(",");
+    const chunkRows = sqlite.prepare(`SELECT id, project_id, source_type, source_id, ordinal, content, content_hash, embedding_model, embedding_dimensions, index_status, index_error, retry_count, next_retry_at, updated_at FROM knowledge_chunks WHERE id IN (${placeholders})`).all(...ids) as unknown as KnowledgeChunkRow[];
     const byId = new Map(chunkRows.map((r) => [r.id, r]));
-    // dedup by source (first hit wins — rows are distance-sorted) + resolve title/excerpt
     const bySource = new Map<string, KnowledgeSource>();
     for (const r of rows) {
       const c = byId.get(r.chunk_id);
       if (!c) continue;
-      if (projectId && c.projectId !== projectId) continue;
-      const key = `${c.sourceType}:${c.sourceId}`;
+      if (projectId && c.project_id !== projectId) continue;
+      const key = `${c.source_type}:${c.source_id}`;
       if (bySource.has(key)) continue;
       bySource.set(key, {
-        sourceType: c.sourceType,
-        sourceId: c.sourceId,
-        projectId: c.projectId,
-        title: resolveSourceTitle(c.sourceType, c.sourceId),
-        excerpt: deriveExcerpt(c.content),
-        chunkId: r.chunk_id
+        sourceType: c.source_type, sourceId: c.source_id, projectId: c.project_id,
+        title: resolveSourceTitle(c.source_type, c.source_id),
+        excerpt: deriveExcerpt(c.content), chunkId: r.chunk_id
       });
     }
     return [...bySource.values()];
   }
 
   function getCachedEmbedding(contentHash: string, model: string): { vector: number[]; dimensions: number } | null {
-    const row = db.select().from(embeddingCache)
-      .where(and(eq(embeddingCache.contentHash, contentHash), eq(embeddingCache.model, model))).get();
+    const row = sqlite.prepare("SELECT embedding, dimensions FROM embedding_cache WHERE content_hash = ? AND model = ?").get(contentHash, model) as { embedding: Uint8Array; dimensions: number } | undefined;
     if (!row) return null;
     return { vector: bufferToVec(row.embedding), dimensions: row.dimensions };
   }
 
   function putCachedEmbedding(contentHash: string, vec: number[], model: string, dim: number): void {
-    db.insert(embeddingCache).values({
-      contentHash,
-      embedding: toVecBuffer(vec),
-      model,
-      dimensions: dim
-    }).onConflictDoUpdate({
-      target: [embeddingCache.contentHash, embeddingCache.model],
-      set: { embedding: toVecBuffer(vec), model, dimensions: dim }
-    }).run();
+    sqlite.prepare("INSERT INTO embedding_cache (content_hash, embedding, model, dimensions) VALUES (?, ?, ?, ?) ON CONFLICT(content_hash, model) DO UPDATE SET embedding=excluded.embedding, model=excluded.model, dimensions=excluded.dimensions").run(contentHash, toVecBuffer(vec), model, dim);
   }
 
-  function listPendingChunks(limit: number): Array<{
-    id: string; content: string; contentHash: string; projectId: string; sourceType: "note" | "task"; sourceId: string;
-  }> {
-    return db.select({
-      id: knowledgeChunks.id,
-      content: knowledgeChunks.content,
-      contentHash: knowledgeChunks.contentHash,
-      projectId: knowledgeChunks.projectId,
-      sourceType: knowledgeChunks.sourceType,
-      sourceId: knowledgeChunks.sourceId
-    })
-      .from(knowledgeChunks)
-      .where(or(
-        inArray(knowledgeChunks.indexStatus, ["pending", "stale"]),
-        and(
-          eq(knowledgeChunks.indexStatus, "failed"),
-          lt(knowledgeChunks.retryCount, 3),
-          lte(knowledgeChunks.nextRetryAt, nowIso())
-        )
-      ))
-      .limit(limit)
-      .all();
+  function listPendingChunks(limit: number): Array<{ id: string; content: string; contentHash: string; projectId: string; sourceType: "note" | "task"; sourceId: string }> {
+    const rows = sqlite.prepare("SELECT id, content, content_hash, project_id, source_type, source_id FROM knowledge_chunks WHERE index_status IN ('pending', 'stale') OR (index_status = 'failed' AND retry_count < 3 AND next_retry_at <= ?) LIMIT ?").all(nowIso(), limit) as unknown as Array<{ id: string; content: string; content_hash: string; project_id: string; source_type: "note" | "task"; source_id: string }>;
+    return rows.map((r) => ({ id: r.id, content: r.content, contentHash: r.content_hash, projectId: r.project_id, sourceType: r.source_type, sourceId: r.source_id }));
   }
 
   function markChunkIndexed(chunkId: string, model: string, dim: number): void {
-    db.update(knowledgeChunks).set({
-      indexStatus: "indexed",
-      embeddingModel: model,
-      embeddingDimensions: dim,
-      indexError: null,
-      retryCount: 0,
-      nextRetryAt: null,
-      updatedAt: nowIso()
-    }).where(eq(knowledgeChunks.id, chunkId)).run();
+    sqlite.prepare("UPDATE knowledge_chunks SET index_status = 'indexed', embedding_model = ?, embedding_dimensions = ?, index_error = NULL, retry_count = 0, next_retry_at = NULL, updated_at = ? WHERE id = ?").run(model, dim, nowIso(), chunkId);
   }
 
   function markChunkFailed(chunkId: string, error: string): void {
-    const current = db.select({ retryCount: knowledgeChunks.retryCount })
-      .from(knowledgeChunks).where(eq(knowledgeChunks.id, chunkId)).get();
-    const retryCount = (current?.retryCount ?? 0) + 1;
+    const current = sqlite.prepare("SELECT retry_count FROM knowledge_chunks WHERE id = ?").get(chunkId) as { retry_count: number } | undefined;
+    const retryCount = (current?.retry_count ?? 0) + 1;
     const retryDelays = [60_000, 300_000, 1_800_000];
-    db.update(knowledgeChunks).set({
-      indexStatus: "failed",
-      indexError: error,
-      retryCount,
-      nextRetryAt: retryCount <= retryDelays.length
-        ? new Date(Date.now() + retryDelays[retryCount - 1]).toISOString()
-        : null,
-      updatedAt: nowIso()
-    }).where(eq(knowledgeChunks.id, chunkId)).run();
+    sqlite.prepare("UPDATE knowledge_chunks SET index_status = 'failed', index_error = ?, retry_count = ?, next_retry_at = ?, updated_at = ? WHERE id = ?").run(
+      error, retryCount,
+      retryCount <= retryDelays.length ? new Date(Date.now() + retryDelays[retryCount - 1]).toISOString() : null,
+      nowIso(), chunkId
+    );
   }
 
-  // safe SQL string literal (single-quote escape) for raw FTS queries
   function sqlStr(value: string): string {
     return `'${value.replace(/'/g, "''")}'`;
   }
   function extractTerms(query: string): string[] {
-    // Split on whitespace + common CJK punctuation; keep letters/numbers (incl. CJK).
-    return query
-      .split(/[\s,，。、；;！!？?]+/)
-      .map((t) => t.replace(/[^\p{L}\p{N}]+/gu, ""))
-      .filter(Boolean);
+    return query.split(/[\s,，。、；;！!？?]+/).map((t) => t.replace(/[^\p{L}\p{N}]+/gu, "")).filter(Boolean);
   }
 
   return {
@@ -1502,64 +1283,37 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
   };
 }
 
-/** AI conversation store (Phase 4): multi-turn chat persistence with sources. */
 export function createAiConversationStore(database: NeoDatabase) {
   if (database.kind !== "sqlite") {
     throw new Error("AI conversation store requires a sqlite database");
   }
-  const { db } = database;
+  const { sqlite } = database;
 
   function createConversation(projectId: string | null, mode: AiRetrievalMode): AiConversation {
     const id = crypto.randomUUID();
     const ts = new Date().toISOString();
-    db.insert(aiConversations).values({ id, projectId, mode, createdAt: ts, updatedAt: ts }).run();
+    sqlite.prepare("INSERT INTO ai_conversations (id, project_id, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(id, projectId, mode, ts, ts);
     return { id, projectId, mode, createdAt: Date.parse(ts), updatedAt: Date.parse(ts) };
   }
 
   function getConversation(id: string): AiConversation | null {
-    const row = db.select().from(aiConversations).where(eq(aiConversations.id, id)).get();
+    const row = sqlite.prepare("SELECT id, project_id, mode, created_at, updated_at FROM ai_conversations WHERE id = ?").get(id) as unknown as AiConversationRow | undefined;
     if (!row) return null;
-    return {
-      id: row.id,
-      projectId: row.projectId,
-      mode: row.mode,
-      createdAt: Date.parse(row.createdAt),
-      updatedAt: Date.parse(row.updatedAt)
-    };
+    return { id: row.id, projectId: row.project_id, mode: row.mode, createdAt: Date.parse(row.created_at), updatedAt: Date.parse(row.updated_at) };
   }
 
   function listMessages(conversationId: string): AiMessage[] {
-    return db.select().from(aiMessages)
-      .where(eq(aiMessages.conversationId, conversationId))
-      .orderBy(asc(aiMessages.createdAt))
-      .all()
-      .map((row) => ({
-        id: row.id,
-        conversationId: row.conversationId,
-        role: row.role,
-        content: row.content,
-        sources: row.sourcesJson ? safeParseSources(row.sourcesJson) : [],
-        createdAt: Date.parse(row.createdAt)
-      }));
+    return (sqlite.prepare("SELECT id, conversation_id, role, content, sources_json, created_at FROM ai_messages WHERE conversation_id = ? ORDER BY created_at").all(conversationId) as unknown as AiMessageRow[]).map((row) => ({
+      id: row.id, conversationId: row.conversation_id, role: row.role, content: row.content,
+      sources: row.sources_json ? safeParseSources(row.sources_json) : [], createdAt: Date.parse(row.created_at)
+    }));
   }
 
-  function appendMessage(
-    conversationId: string,
-    role: AiMessage["role"],
-    content: string,
-    sources: KnowledgeSource[] = []
-  ): AiMessage {
+  function appendMessage(conversationId: string, role: AiMessage["role"], content: string, sources: KnowledgeSource[] = []): AiMessage {
     const id = crypto.randomUUID();
     const ts = new Date().toISOString();
-    db.insert(aiMessages).values({
-      id,
-      conversationId,
-      role,
-      content,
-      sourcesJson: sources.length ? JSON.stringify(sources) : null,
-      createdAt: ts
-    }).run();
-    db.update(aiConversations).set({ updatedAt: ts }).where(eq(aiConversations.id, conversationId)).run();
+    sqlite.prepare("INSERT INTO ai_messages (id, conversation_id, role, content, sources_json, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, conversationId, role, content, sources.length ? JSON.stringify(sources) : null, ts);
+    sqlite.prepare("UPDATE ai_conversations SET updated_at = ? WHERE id = ?").run(ts, conversationId);
     return { id, conversationId, role, content, sources, createdAt: Date.parse(ts) };
   }
 

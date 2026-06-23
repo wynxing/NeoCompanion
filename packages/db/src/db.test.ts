@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { createDatabase, createFocusStore, createKnowledgeStore, createTaskStore, createWindowEventStore } from "./index";
 
-// better-sqlite3's native binding may be unavailable in some environments
-// (e.g. Node 24 without a prebuilt binary). The knowledge store requires the
-// sqlite path; skip its tests when only the memory fallback is reachable.
+// The knowledge store requires the sqlite path; skip its tests when only the
+// memory fallback is reachable.
 const SQLITE_AVAILABLE = createDatabase(":memory:").kind === "sqlite";
 
 describe("db stores", () => {
@@ -44,6 +47,30 @@ describe("db stores", () => {
 });
 
 describe.skipIf(!SQLITE_AVAILABLE)("knowledge store", () => {
+  it("supports nested transactions and rolls back only the failing savepoint", () => {
+    const database = createDatabase(":memory:");
+    const kw = createKnowledgeStore(database);
+
+    kw.runInTransaction(() => {
+      kw.createProject({ title: "outer-before" });
+      try {
+        kw.runInTransaction(() => {
+          kw.createProject({ title: "inner-rollback" });
+          throw new Error("intentional nested rollback");
+        });
+      } catch {
+        // The outer transaction must remain usable after the savepoint rollback.
+      }
+      const project = kw.createProject({ title: "outer-after" });
+      const note = kw.createNote(project.id, "nested index");
+      kw.reindexNote(note, (text) => [{ content: text, contentHash: "nested-hash" }]);
+    });
+
+    expect(kw.listProjects().map((project) => project.title)).toEqual(["outer-before", "outer-after"]);
+    expect(kw.searchFts(null, "nested index", 5)).toHaveLength(1);
+    database.close();
+  });
+
   it("persists projects, notes, columns, tasks with mock-compatible shapes", () => {
     const database = createDatabase(":memory:");
     const kw = createKnowledgeStore(database);
@@ -89,6 +116,57 @@ describe.skipIf(!SQLITE_AVAILABLE)("knowledge store", () => {
     expect(kw.getProject(project.id)).toBeNull();
     expect(kw.notesForProject(project.id)).toHaveLength(0);
     database.close();
+  });
+});
+
+describe.skipIf(!SQLITE_AVAILABLE)("legacy database compatibility", () => {
+  it("opens an existing database and preserves rows while applying migrations", () => {
+    const dir = mkdtempSync(join(tmpdir(), "neo-db-legacy-"));
+    const filename = join(dir, "legacy.sqlite");
+    const legacy = new DatabaseSync(filename);
+    const vector = new Uint8Array(new Float32Array([0.25, 0.75]).buffer);
+
+    try {
+      legacy.exec(`
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'open',
+          created_at TEXT NOT NULL,
+          completed_at TEXT
+        );
+        CREATE TABLE embedding_cache (
+          content_hash TEXT PRIMARY KEY,
+          embedding BLOB NOT NULL,
+          model TEXT NOT NULL,
+          dimensions INTEGER NOT NULL
+        );
+      `);
+      legacy.prepare("INSERT INTO tasks (id, title, status, created_at, completed_at) VALUES (?, ?, ?, ?, ?)")
+        .run("legacy-task", "preserved task", "open", "2026-01-01T00:00:00.000Z", null);
+      legacy.prepare("INSERT INTO embedding_cache (content_hash, embedding, model, dimensions) VALUES (?, ?, ?, ?)")
+        .run("legacy-hash", vector, "legacy-model", 2);
+    } finally {
+      legacy.close();
+    }
+
+    const database = createDatabase(filename);
+    try {
+      expect(database.kind).toBe("sqlite");
+      expect(createTaskStore(database).list().items[0]).toMatchObject({
+        id: "legacy-task",
+        title: "preserved task"
+      });
+      expect(createKnowledgeStore(database).getCachedEmbedding("legacy-hash", "legacy-model")?.vector)
+        .toEqual(expect.arrayContaining([0.25, 0.75]));
+      if (database.kind === "sqlite") {
+        const versions = database.sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all();
+        expect(versions).toHaveLength(5);
+      }
+    } finally {
+      database.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
