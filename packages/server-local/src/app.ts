@@ -45,7 +45,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
   if (!authToken) throw new Error("APP_AUTH_TOKEN is required");
   const database = dependencies.database ?? createDatabase();
   // Knowledge store requires the sqlite path; null when only the memory
-  // fallback is reachable (better-sqlite3 native binding unavailable). Routes
+  // fallback is reachable (for example, when the database cannot be opened). Routes
   // degrade to 503 in that case.
   const knowledgeStore: KnowledgeStore | null = database.kind === "sqlite" ? createKnowledgeStore(database) : null;
   // Embedding provider config persisted to the app_config table so it survives
@@ -67,8 +67,10 @@ export async function createApp(dependencies: AppDependencies = {}) {
   let embeddingConfig: EmbeddingConfig = { ...loadedEmbeddingConfig, apiKey: undefined };
   const persistEmbeddingConfig = () => {
     if (database.kind !== "sqlite") return;
-    const persisted = { ...embeddingConfig, apiKey: legacyEmbeddingApiKey };
-    if (!legacyEmbeddingApiKey) delete persisted.apiKey;
+    // 持久化的 JSON 永远不含 apiKey：新 key 仅存 keychain/env（runtime 内存），
+    // legacy 明文 key 仅保留在内存供本会话迁移，不再写回磁盘。这样每次 set()
+    // 都会用干净的配置覆盖旧行，存量用户的明文 key 在下次保存时自动消失。
+    const persisted = { ...embeddingConfig };
     setAppConfig(database, EMBEDDING_CONFIG_KEY, JSON.stringify(persisted));
   };
   const embeddingConfigController = {
