@@ -1,32 +1,25 @@
 import type { FastifyInstance } from "fastify";
+import { AiChatBodySchema, type AiChatBody } from "@neo-companion/shared";
 import type { AiService, ChatContextSelection } from "../modules/ai/service";
 import { resolveMode } from "../modules/ai/service";
 
 export function registerAiRoutes(app: FastifyInstance, aiService: AiService) {
-  app.post("/api/ai/chat", async (request, reply) => {
-    const body = request.body as {
-      message?: string;
-      mode?: string;
-      projectId?: string;
-      context?: ChatContextSelection;
-      conversationId?: string;
-    };
-    if (!body.message?.trim()) return reply.code(400).send({ error: "message is required" });
-
-    try {
-      const mode = resolveMode(body.mode);
-      const answer = mode === "ask"
-        ? await aiService.handleAsk({ message: body.message, projectId: body.projectId ?? null })
+  app.post<{ Body: AiChatBody }>(
+    "/api/ai/chat",
+    { schema: { body: AiChatBodySchema } },
+    async (request) => {
+      const mode = resolveMode(request.body.mode);
+      return mode === "ask"
+        ? await aiService.handleAsk({
+            message: request.body.message,
+            projectId: request.body.projectId ?? null
+          })
         : await aiService.handleChat({
-            message: body.message,
-            projectId: body.projectId ?? null,
-            context: body.context,
-            conversationId: body.conversationId
+            message: request.body.message,
+            projectId: request.body.projectId ?? null,
+            context: request.body.context as ChatContextSelection | undefined,
+            conversationId: request.body.conversationId
           });
-      return answer;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "AI request failed";
-      return reply.code(500).send({ error: message });
     }
-  });
+  );
 }

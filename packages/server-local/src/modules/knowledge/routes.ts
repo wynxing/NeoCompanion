@@ -1,8 +1,46 @@
 import type { FastifyInstance } from "fastify";
 import type { KnowledgeStore } from "@neo-companion/db";
-import type {
-  KnowledgeTaskStatus
+import {
+  ProjectListQuerySchema,
+  ProjectIdParamSchema,
+  ProjectCreateBodySchema,
+  ProjectPatchBodySchema,
+  NoteCreateBodySchema,
+  NoteIdParamSchema,
+  NotePatchBodySchema,
+  ColumnCreateBodySchema,
+  ColumnIdParamSchema,
+  ColumnPatchBodySchema,
+  KnowledgeTaskCreateBodySchema,
+  KnowledgeTaskPatchBodySchema,
+  TaskIdParamSchema,
+  KnowledgeTaskMoveBodySchema,
+  KnowledgeSearchQuerySchema,
+  KnowledgeReindexBodySchema,
+  EmbeddingConfigBodySchema,
+  RootPathBodySchema,
+  MirrorPathBodySchema,
+  type ProjectListQuery,
+  type ProjectIdParam,
+  type ProjectCreateBody,
+  type ProjectPatchBody,
+  type NoteCreateBody,
+  type NoteIdParam,
+  type NotePatchBody,
+  type ColumnCreateBody,
+  type ColumnIdParam,
+  type ColumnPatchBody,
+  type KnowledgeTaskCreateBody,
+  type KnowledgeTaskPatchBody,
+  type TaskIdParam,
+  type KnowledgeTaskMoveBody,
+  type KnowledgeSearchQuery,
+  type KnowledgeReindexBody,
+  type EmbeddingConfigBody,
+  type RootPathBody,
+  type MirrorPathBody
 } from "@neo-companion/shared";
+import { NotFoundError, ServiceUnavailableError, BadRequestError } from "../../errors";
 import { exportToDir, importFromDir } from "./mirror";
 import type { EmbeddingConfig, KnowledgeService } from "./service";
 
@@ -22,7 +60,7 @@ export interface RootPathController {
  * Knowledge workspace REST routes (Phase 1 CRUD).
  *
  * The knowledge store requires the sqlite path; when only the memory fallback
- * is reachable (e.g. better-sqlite3 native binding unavailable), `store` is null
+ * is reachable (e.g. the configured database cannot be opened), `store` is null
  * and these routes return 503 so the rest of the app keeps working.
  *
  * Retrieval (search / index-status / reindex) and AI integration land in
@@ -40,234 +78,273 @@ export function registerKnowledgeRoutes(
   // export/import. Empty until the user picks a folder.
   let rootPath = rootPathController?.get() ?? "";
 
-  const requireStore = (reply: import("fastify").FastifyReply): KnowledgeStore | null => {
-    if (!store) {
-      reply.code(503).send({ error: "knowledge store unavailable (sqlite not loaded)" });
-      return null;
-    }
+  const requireStore = (): KnowledgeStore => {
+    if (!store) throw new ServiceUnavailableError("knowledge store unavailable (sqlite not loaded)");
     return store;
   };
-  const requireService = (reply: import("fastify").FastifyReply): KnowledgeService | null => {
-    if (!service) {
-      reply.code(503).send({ error: "knowledge index unavailable (sqlite not loaded)" });
-      return null;
-    }
+  const requireService = (): KnowledgeService => {
+    if (!service) throw new ServiceUnavailableError("knowledge index unavailable (sqlite not loaded)");
     return service;
   };
 
   // ── Projects ──
-  app.get("/api/knowledge/projects", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const query = request.query as { parentId?: string; root?: string };
-    if (query.parentId) return kw.childProjects(query.parentId);
-    if (query.root === "1") {
-      return kw.listProjects().filter((p) => p.parentId === null);
+  app.get<{ Querystring: ProjectListQuery }>(
+    "/api/knowledge/projects",
+    { schema: { querystring: ProjectListQuerySchema } },
+    async (request) => {
+      const kw = requireStore();
+      if (request.query.parentId) return kw.childProjects(request.query.parentId);
+      if (request.query.root === "1") {
+        return kw.listProjects().filter((p) => p.parentId === null);
+      }
+      return kw.listProjects();
     }
-    return kw.listProjects();
-  });
+  );
 
-  app.get("/api/knowledge/projects/:id", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    const project = kw.getProject(id);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    return project;
-  });
+  app.get<{ Params: ProjectIdParam }>(
+    "/api/knowledge/projects/:id",
+    { schema: { params: ProjectIdParamSchema } },
+    async (request) => {
+      const kw = requireStore();
+      const project = kw.getProject(request.params.id);
+      if (!project) throw new NotFoundError("project", request.params.id);
+      return project;
+    }
+  );
 
-  app.get("/api/knowledge/projects/:id/path", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    return kw.projectPath(id);
-  });
+  app.get<{ Params: ProjectIdParam }>(
+    "/api/knowledge/projects/:id/path",
+    { schema: { params: ProjectIdParamSchema } },
+    async (request) => {
+      const kw = requireStore();
+      return kw.projectPath(request.params.id);
+    }
+  );
 
-  app.post("/api/knowledge/projects", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const body = request.body as { title?: string; parentId?: string | null; description?: string; color?: string; icon?: string };
-    if (!body.title?.trim()) return reply.code(400).send({ error: "title is required" });
-    return kw.createProject({ title: body.title, parentId: body.parentId ?? null, description: body.description, color: body.color, icon: body.icon });
-  });
+  app.post<{ Body: ProjectCreateBody }>(
+    "/api/knowledge/projects",
+    { schema: { body: ProjectCreateBodySchema } },
+    async (request) => {
+      const kw = requireStore();
+      return kw.createProject({
+        title: request.body.title,
+        parentId: request.body.parentId ?? null,
+        description: request.body.description,
+        color: request.body.color,
+        icon: request.body.icon
+      });
+    }
+  );
 
-  app.patch("/api/knowledge/projects/:id", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    const body = request.body as { title?: string; description?: string; color?: string; icon?: string; parentId?: string | null; order?: number };
-    const project = kw.updateProject(id, body);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    return project;
-  });
+  app.patch<{ Params: ProjectIdParam; Body: ProjectPatchBody }>(
+    "/api/knowledge/projects/:id",
+    { schema: { params: ProjectIdParamSchema, body: ProjectPatchBodySchema } },
+    async (request) => {
+      const kw = requireStore();
+      const project = kw.updateProject(request.params.id, request.body);
+      if (!project) throw new NotFoundError("project", request.params.id);
+      return project;
+    }
+  );
 
-  app.delete("/api/knowledge/projects/:id", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    kw.deleteProject(id);
-    return reply.code(204).send();
-  });
+  app.delete<{ Params: ProjectIdParam }>(
+    "/api/knowledge/projects/:id",
+    { schema: { params: ProjectIdParamSchema } },
+    async (request, reply) => {
+      const kw = requireStore();
+      kw.deleteProject(request.params.id);
+      return reply.code(204).send();
+    }
+  );
 
   // ── Notes ──
-  app.get("/api/knowledge/projects/:id/notes", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    return kw.notesForProject(id);
-  });
+  app.get<{ Params: ProjectIdParam }>(
+    "/api/knowledge/projects/:id/notes",
+    { schema: { params: ProjectIdParamSchema } },
+    async (request) => {
+      const kw = requireStore();
+      return kw.notesForProject(request.params.id);
+    }
+  );
 
-  app.post("/api/knowledge/projects/:id/notes", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    const body = request.body as { title?: string };
-    const note = kw.createNote(id, body.title?.trim() || "无标题笔记");
-    service?.reindexNote(note);
-    return note;
-  });
+  app.post<{ Params: ProjectIdParam; Body: NoteCreateBody }>(
+    "/api/knowledge/projects/:id/notes",
+    { schema: { params: ProjectIdParamSchema, body: NoteCreateBodySchema } },
+    async (request) => {
+      const kw = requireStore();
+      const note = kw.createNote(request.params.id, request.body.title?.trim() || "无标题笔记");
+      service?.reindexNote(note);
+      return note;
+    }
+  );
 
-  app.get("/api/knowledge/notes/:id", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    const note = kw.getNote(id);
-    if (!note) return reply.code(404).send({ error: "note not found" });
-    return note;
-  });
+  app.get<{ Params: NoteIdParam }>(
+    "/api/knowledge/notes/:id",
+    { schema: { params: NoteIdParamSchema } },
+    async (request) => {
+      const kw = requireStore();
+      const note = kw.getNote(request.params.id);
+      if (!note) throw new NotFoundError("note", request.params.id);
+      return note;
+    }
+  );
 
-  app.patch("/api/knowledge/notes/:id", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    const body = request.body as { title?: string; body?: string; tags?: string[] };
-    const note = kw.updateNote(id, body);
-    if (!note) return reply.code(404).send({ error: "note not found" });
-    service?.reindexNote(note);
-    return note;
-  });
+  app.patch<{ Params: NoteIdParam; Body: NotePatchBody }>(
+    "/api/knowledge/notes/:id",
+    { schema: { params: NoteIdParamSchema, body: NotePatchBodySchema } },
+    async (request) => {
+      const kw = requireStore();
+      const note = kw.updateNote(request.params.id, request.body);
+      if (!note) throw new NotFoundError("note", request.params.id);
+      service?.reindexNote(note);
+      return note;
+    }
+  );
 
-  app.delete("/api/knowledge/notes/:id", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    kw.deleteNote(id);
-    service && kw; // removeIndex handled by store.deleteNote cascade (chunks deleted)
-    return reply.code(204).send();
-  });
+  app.delete<{ Params: NoteIdParam }>(
+    "/api/knowledge/notes/:id",
+    { schema: { params: NoteIdParamSchema } },
+    async (request, reply) => {
+      const kw = requireStore();
+      kw.deleteNote(request.params.id);
+      // removeIndex handled by store.deleteNote cascade (chunks deleted)
+      return reply.code(204).send();
+    }
+  );
 
-  app.get("/api/knowledge/notes/:id/backlinks", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    return kw.backlinksFor(id);
-  });
+  app.get<{ Params: NoteIdParam }>(
+    "/api/knowledge/notes/:id/backlinks",
+    { schema: { params: NoteIdParamSchema } },
+    async (request) => {
+      const kw = requireStore();
+      return kw.backlinksFor(request.params.id);
+    }
+  );
 
   // ── Board columns ──
-  app.get("/api/knowledge/projects/:id/columns", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    return kw.columnsForProject(id);
-  });
+  app.get<{ Params: ProjectIdParam }>(
+    "/api/knowledge/projects/:id/columns",
+    { schema: { params: ProjectIdParamSchema } },
+    async (request) => {
+      const kw = requireStore();
+      return kw.columnsForProject(request.params.id);
+    }
+  );
 
-  app.post("/api/knowledge/projects/:id/columns", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    const body = request.body as { title?: string; status?: KnowledgeTaskStatus; order?: number };
-    if (!body.title?.trim()) return reply.code(400).send({ error: "title is required" });
-    return kw.createColumn(id, { title: body.title, status: body.status ?? "todo", order: body.order ?? 0 });
-  });
+  app.post<{ Params: ProjectIdParam; Body: ColumnCreateBody }>(
+    "/api/knowledge/projects/:id/columns",
+    { schema: { params: ProjectIdParamSchema, body: ColumnCreateBodySchema } },
+    async (request) => {
+      const kw = requireStore();
+      return kw.createColumn(request.params.id, {
+        title: request.body.title,
+        status: request.body.status ?? "todo",
+        order: request.body.order ?? 0
+      });
+    }
+  );
 
-  app.patch("/api/knowledge/columns/:id", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    const body = request.body as { title?: string; status?: KnowledgeTaskStatus; order?: number };
-    const column = kw.updateColumn(id, body);
-    if (!column) return reply.code(404).send({ error: "column not found" });
-    return column;
-  });
+  app.patch<{ Params: ColumnIdParam; Body: ColumnPatchBody }>(
+    "/api/knowledge/columns/:id",
+    { schema: { params: ColumnIdParamSchema, body: ColumnPatchBodySchema } },
+    async (request) => {
+      const kw = requireStore();
+      const column = kw.updateColumn(request.params.id, request.body);
+      if (!column) throw new NotFoundError("column", request.params.id);
+      return column;
+    }
+  );
 
-  app.delete("/api/knowledge/columns/:id", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    kw.deleteColumn(id);
-    return reply.code(204).send();
-  });
+  app.delete<{ Params: ColumnIdParam }>(
+    "/api/knowledge/columns/:id",
+    { schema: { params: ColumnIdParamSchema } },
+    async (request, reply) => {
+      const kw = requireStore();
+      kw.deleteColumn(request.params.id);
+      return reply.code(204).send();
+    }
+  );
 
   // ── Tasks ──
-  app.get("/api/knowledge/projects/:id/tasks", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    return kw.tasksForProject(id);
-  });
+  app.get<{ Params: ProjectIdParam }>(
+    "/api/knowledge/projects/:id/tasks",
+    { schema: { params: ProjectIdParamSchema } },
+    async (request) => {
+      const kw = requireStore();
+      return kw.tasksForProject(request.params.id);
+    }
+  );
 
-  app.post("/api/knowledge/projects/:id/tasks", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    const body = request.body as { columnId?: string; title?: string };
-    if (!body.title?.trim()) return reply.code(400).send({ error: "title is required" });
-    const task = kw.createTask(id, body.columnId ?? "", body.title);
-    service?.reindexTask(task);
-    return task;
-  });
+  app.post<{ Params: ProjectIdParam; Body: KnowledgeTaskCreateBody }>(
+    "/api/knowledge/projects/:id/tasks",
+    { schema: { params: ProjectIdParamSchema, body: KnowledgeTaskCreateBodySchema } },
+    async (request) => {
+      const kw = requireStore();
+      const task = kw.createTask(request.params.id, request.body.columnId ?? "", request.body.title);
+      service?.reindexTask(task);
+      return task;
+    }
+  );
 
-  app.patch("/api/knowledge/tasks/:id", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    const body = request.body as { title?: string; description?: string; status?: KnowledgeTaskStatus; columnId?: string; order?: number; linkedNoteId?: string | null };
-    const task = kw.updateTask(id, body);
-    if (!task) return reply.code(404).send({ error: "task not found" });
-    if (body.title !== undefined || body.description !== undefined) service?.reindexTask(task);
-    return task;
-  });
+  app.patch<{ Params: TaskIdParam; Body: KnowledgeTaskPatchBody }>(
+    "/api/knowledge/tasks/:id",
+    { schema: { params: TaskIdParamSchema, body: KnowledgeTaskPatchBodySchema } },
+    async (request) => {
+      const kw = requireStore();
+      const task = kw.updateTask(request.params.id, request.body);
+      if (!task) throw new NotFoundError("task", request.params.id);
+      if (request.body.title !== undefined || request.body.description !== undefined) {
+        service?.reindexTask(task);
+      }
+      return task;
+    }
+  );
 
-  app.delete("/api/knowledge/tasks/:id", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    kw.deleteTask(id);
-    return reply.code(204).send();
-  });
+  app.delete<{ Params: TaskIdParam }>(
+    "/api/knowledge/tasks/:id",
+    { schema: { params: TaskIdParamSchema } },
+    async (request, reply) => {
+      const kw = requireStore();
+      kw.deleteTask(request.params.id);
+      return reply.code(204).send();
+    }
+  );
 
-  app.post("/api/knowledge/tasks/:id/move", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const { id } = request.params as { id: string };
-    const body = request.body as { columnId?: string; index?: number };
-    kw.moveTask(id, body.columnId ?? "", body.index ?? 0);
-    return reply.code(204).send();
-  });
+  app.post<{ Params: TaskIdParam; Body: KnowledgeTaskMoveBody }>(
+    "/api/knowledge/tasks/:id/move",
+    { schema: { params: TaskIdParamSchema, body: KnowledgeTaskMoveBodySchema } },
+    async (request, reply) => {
+      const kw = requireStore();
+      kw.moveTask(request.params.id, request.body.columnId ?? "", request.body.index ?? 0);
+      return reply.code(204).send();
+    }
+  );
 
   // ── Retrieval (Phase 2: FTS5; Phase 3 adds vec + RRF) ──
-  app.get("/api/knowledge/search", async (request, reply) => {
-    const svc = requireService(reply);
-    if (!svc) return;
-    const query = request.query as { q?: string; projectId?: string; limit?: string };
-    if (!query.q?.trim()) return reply.code(400).send({ error: "q is required" });
-    const limit = query.limit ? Number.parseInt(query.limit, 10) : 20;
-    return svc.searchHybrid(query.projectId ?? null, query.q, Number.isFinite(limit) ? limit : 20);
-  });
+  app.get<{ Querystring: KnowledgeSearchQuery }>(
+    "/api/knowledge/search",
+    { schema: { querystring: KnowledgeSearchQuerySchema } },
+    async (request) => {
+      const svc = requireService();
+      const limit = request.query.limit ? Number.parseInt(request.query.limit, 10) : 20;
+      return svc.searchHybrid(request.query.projectId ?? null, request.query.q, Number.isFinite(limit) ? limit : 20);
+    }
+  );
 
-  app.get("/api/knowledge/index-status", async (request, reply) => {
-    const svc = requireService(reply);
-    if (!svc) return;
+  app.get("/api/knowledge/index-status", async () => {
+    const svc = requireService();
     return svc.indexStatus();
   });
 
-  app.post("/api/knowledge/reindex", async (request, reply) => {
-    const svc = requireService(reply);
-    if (!svc) return;
-    const body = (request.body as { embeddingModel?: string } | null) ?? {};
-    if (body.embeddingModel) svc.markStale(body.embeddingModel);
-    return svc.reindexAll();
-  });
+  app.post<{ Body: KnowledgeReindexBody }>(
+    "/api/knowledge/reindex",
+    { schema: { body: KnowledgeReindexBodySchema } },
+    async (request) => {
+      const svc = requireService();
+      if (request.body.embeddingModel) svc.markStale(request.body.embeddingModel);
+      return svc.reindexAll();
+    }
+  );
 
   // ── Embedding provider config (Phase 3) ──
   // Persisted to app_config (survives restart); apiKey lives only in the local
@@ -288,78 +365,87 @@ export function registerKnowledgeRoutes(
     };
   });
 
-  app.post("/api/knowledge/embedding-config/legacy-secret/claim", async (request, reply) => {
+  app.post("/api/knowledge/embedding-config/legacy-secret/claim", async () => {
     const apiKey = embeddingConfigController?.getLegacySecret();
-    if (!apiKey) return reply.code(404).send({ error: "legacy secret not found" });
+    if (!apiKey) throw new NotFoundError("legacy secret");
     return { apiKey };
   });
 
-  app.delete("/api/knowledge/embedding-config/legacy-secret", async (request, reply) => {
+  app.delete("/api/knowledge/embedding-config/legacy-secret", async (_request, reply) => {
     embeddingConfigController?.clearLegacySecret();
     return reply.code(204).send();
   });
 
-  app.put("/api/knowledge/embedding-config", async (request, reply) => {
-    if (!embeddingConfigController) return reply.code(503).send({ error: "embedding config unavailable" });
-    const body = request.body as Partial<EmbeddingConfig>;
-    const current = embeddingConfigController.get();
-    // A non-empty apiKey overwrites the stored secret; an absent/empty apiKey
-    // keeps the existing stored key (UI masks the secret). To switch to env-var
-    // mode the client sends an explicit apiKey: null which clears the stored key.
-    let apiKey: string | undefined;
-    if (body.apiKey) {
-      apiKey = body.apiKey;
-    } else if (body.apiKey === null) {
-      apiKey = undefined; // clear stored key → fall back to env var
-    } else {
-      apiKey = current.apiKey;
+  app.put<{ Body: EmbeddingConfigBody }>(
+    "/api/knowledge/embedding-config",
+    { schema: { body: EmbeddingConfigBodySchema } },
+    async (request) => {
+      if (!embeddingConfigController) throw new ServiceUnavailableError("embedding config unavailable");
+      const body = request.body;
+      const current = embeddingConfigController.get();
+      // A non-empty apiKey overwrites the stored secret; an absent/empty apiKey
+      // keeps the existing stored key (UI masks the secret). To switch to env-var
+      // mode the client sends an explicit apiKey: null which clears the stored key.
+      let apiKey: string | undefined;
+      if (body.apiKey) {
+        apiKey = body.apiKey;
+      } else if (body.apiKey === null) {
+        apiKey = undefined; // clear stored key → fall back to env var
+      } else {
+        apiKey = current.apiKey;
+      }
+      const next: EmbeddingConfig = {
+        provider: body.provider ?? current.provider,
+        baseUrl: body.baseUrl ?? current.baseUrl,
+        apiKey,
+        model: body.model ?? current.model,
+        apiKeySource: body.apiKeySource ?? current.apiKeySource
+      };
+      embeddingConfigController.set(next);
+      // model change → mark stale so chunks re-embed with the new model
+      if (next.model && next.model !== current.model) {
+        service?.markStale(next.model);
+      }
+      await service?.drainEmbeddings();
+      return { ok: true };
     }
-    const next: EmbeddingConfig = {
-      provider: body.provider ?? current.provider,
-      baseUrl: body.baseUrl ?? current.baseUrl,
-      apiKey,
-      model: body.model ?? current.model,
-      apiKeySource: body.apiKeySource ?? current.apiKeySource
-    };
-    embeddingConfigController.set(next);
-    // model change → mark stale so chunks re-embed with the new model
-    if (next.model && next.model !== current.model) {
-      service?.markStale(next.model);
-    }
-    await service?.drainEmbeddings();
-    return { ok: true };
-  });
+  );
 
   // ── File mirror (hybrid SQLite + Markdown/JSONL) ──
   app.get("/api/knowledge/root-path", async () => ({ path: rootPath }));
 
-  app.put("/api/knowledge/root-path", async (request, reply) => {
-    const body = request.body as { path?: string };
-    rootPath = (body.path ?? "").trim();
-    rootPathController?.set(rootPath);
-    return { path: rootPath };
-  });
+  app.put<{ Body: RootPathBody }>(
+    "/api/knowledge/root-path",
+    { schema: { body: RootPathBodySchema } },
+    async (request) => {
+      rootPath = (request.body.path ?? "").trim();
+      rootPathController?.set(rootPath);
+      return { path: rootPath };
+    }
+  );
 
-  app.post("/api/knowledge/mirror/export", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const body = (request.body as { path?: string } | null) ?? {};
-    const target = (body.path ?? rootPath).trim();
-    if (!target) return reply.code(400).send({ error: "rootPath not set" });
-    const stats = await exportToDir(kw, target);
-    return stats;
-  });
+  app.post<{ Body: MirrorPathBody }>(
+    "/api/knowledge/mirror/export",
+    { schema: { body: MirrorPathBodySchema } },
+    async (request) => {
+      const kw = requireStore();
+      const target = (request.body.path ?? rootPath).trim();
+      if (!target) throw new BadRequestError("rootPath not set");
+      return await exportToDir(kw, target);
+    }
+  );
 
-  app.post("/api/knowledge/mirror/import", async (request, reply) => {
-    const kw = requireStore(reply);
-    if (!kw) return;
-    const body = (request.body as { path?: string } | null) ?? {};
-    const source = (body.path ?? rootPath).trim();
-    if (!source) return reply.code(400).send({ error: "rootPath not set" });
-    const stats = await importFromDir(kw, source, {
-      noteChanged: (note) => service?.reindexNote(note),
-      taskChanged: (task) => service?.reindexTask(task)
-    });
-    return stats;
-  });
+  app.post<{ Body: MirrorPathBody }>(
+    "/api/knowledge/mirror/import",
+    { schema: { body: MirrorPathBodySchema } },
+    async (request) => {
+      const kw = requireStore();
+      const source = (request.body.path ?? rootPath).trim();
+      if (!source) throw new BadRequestError("rootPath not set");
+      return await importFromDir(kw, source, {
+        noteChanged: (note) => service?.reindexNote(note),
+        taskChanged: (task) => service?.reindexTask(task)
+      });
+    }
+  );
 }

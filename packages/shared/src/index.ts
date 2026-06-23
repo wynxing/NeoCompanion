@@ -10,6 +10,11 @@ export interface Task {
   completedAt: string | null;
 }
 
+export interface TaskListResponse {
+  items: Task[];
+  total: number;
+}
+
 export interface FocusSession {
   id: string;
   taskId: string | null;
@@ -56,12 +61,14 @@ export interface WsMessage<TPayload = unknown> {
     | "window:activeChanged"
     | "tts:started"
     | "tts:done"
+    | "tts:error"
     | "hook:statusChanged"
     | "permission:request"
     | "permission:resolved"
     | "permission:autoDismiss"
     | "permission:response"
-    | "pong";
+    | "pong"
+    | "server:shutdown";
   payload: TPayload;
   id?: string;
   replyTo?: string;
@@ -273,3 +280,7 @@ export interface AiMessage {
 }
 
 export type KnowledgeChunkIndexStatus = "pending" | "indexed" | "failed" | "stale";
+
+// ── Request/Response Schemas (TypeBox) ──
+// Shared runtime-validatable schemas for Fastify route validation. See schemas.ts.
+export * from "./schemas";

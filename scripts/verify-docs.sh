@@ -47,12 +47,7 @@ if [[ -n "$PET_VIOLATIONS" ]]; then
   log_error "Found deprecated term '宠物' in markdown files (see above)"
 fi
 
-# 5. README must not claim FTS5 + sqlite-vec is already shipped.
-if grep -nE 'SQLite \(Drizzle ORM \+ FTS5\).*sqlite-vec' README.md; then
-  log_error "README claims FTS5 + sqlite-vec is shipped; it is currently planned, not implemented"
-fi
-
-# 6. TTS error message must reference the real setup doc.
+# 5. TTS error message must reference the real setup doc.
 if grep -q 'Xiaomi MiMo TTS console documentation' packages/tts/src/index.ts; then
   log_error "TTS error still references non-existent 'Xiaomi MiMo TTS console documentation'"
 fi

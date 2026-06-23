@@ -6,7 +6,7 @@
 
 | 工具 | 版本 | 说明 |
 |------|------|------|
-| Node.js | 22.x | 建议使用 LTS |
+| Node.js | 24.x | 必需；数据库使用内置 `node:sqlite` |
 | pnpm | 10.32+ | 由 `packageManager` 字段强制锁定 |
 | Rust | stable | 用于 Tauri v2 后端 |
 | Git | 任意 | |
@@ -104,7 +104,7 @@ NeoCompanion/
 ├── apps/desktop/src-tauri/   # Rust / Tauri 后端
 ├── apps/desktop/src/         # Vue 3 前端
 ├── packages/server-local/    # Fastify sidecar
-├── packages/db/              # SQLite + Drizzle ORM
+├── packages/db/              # SQLite + node:sqlite
 ├── packages/shared/          # 共享 TypeScript 类型
 ├── packages/ai/              # DeepSeek 聊天适配器
 ├── packages/tts/             # MiMo TTS 适配器
@@ -117,9 +117,9 @@ NeoCompanion/
 
 ## 常见问题
 
-### `pnpm install` 在 `better-sqlite3` 上失败
+### 启动时报 `node:sqlite` 不可用
 
-`better-sqlite3` 是原生模块。请确保 Node.js 版本兼容，且 `node-gyp` 能找到 Python。Windows 上建议安装 Visual Studio Build Tools 的"使用 C++ 的桌面开发"工作负载。
+项目要求 Node.js 24+。请先运行 `node --version`；旧版 Node 无法加载内置 SQLite 驱动。`sqlite-vec` 仍按平台安装可加载扩展，若向量检索不可用，请重新执行 `pnpm install` 并确认对应平台包未被包管理器裁剪。
 
 ### Linux 上 Tauri 构建失败
 

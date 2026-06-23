@@ -1,11 +1,15 @@
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
+import helmet from "@fastify/helmet";
+import rateLimit from "@fastify/rate-limit";
+import { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import Fastify, { type FastifyInstance } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { streamDeepSeekChat, embedContents } from "@neo-companion/ai";
 import { createAiConversationStore, createDatabase, createHookRulesStore, createKnowledgeStore, getAppConfig, setAppConfig, type AiConversationStore, type KnowledgeStore, type NeoDatabase } from "@neo-companion/db";
 import type { ChatMessage, CompanionFeedback, TtsResult } from "@neo-companion/shared";
 import { speakWithMimo } from "@neo-companion/tts";
+import { isHttpError } from "./errors";
 import { createFocusManager } from "./services/focus-manager";
 import { createHookManager, type HookManagerEvents } from "./services/hook-manager";
 import { getWeatherSummary } from "./services/weather-service";
@@ -41,7 +45,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
   if (!authToken) throw new Error("APP_AUTH_TOKEN is required");
   const database = dependencies.database ?? createDatabase();
   // Knowledge store requires the sqlite path; null when only the memory
-  // fallback is reachable (better-sqlite3 native binding unavailable). Routes
+  // fallback is reachable (for example, when the database cannot be opened). Routes
   // degrade to 503 in that case.
   const knowledgeStore: KnowledgeStore | null = database.kind === "sqlite" ? createKnowledgeStore(database) : null;
   // Embedding provider config persisted to the app_config table so it survives
@@ -63,8 +67,10 @@ export async function createApp(dependencies: AppDependencies = {}) {
   let embeddingConfig: EmbeddingConfig = { ...loadedEmbeddingConfig, apiKey: undefined };
   const persistEmbeddingConfig = () => {
     if (database.kind !== "sqlite") return;
-    const persisted = { ...embeddingConfig, apiKey: legacyEmbeddingApiKey };
-    if (!legacyEmbeddingApiKey) delete persisted.apiKey;
+    // 持久化的 JSON 永远不含 apiKey：新 key 仅存 keychain/env（runtime 内存），
+    // legacy 明文 key 仅保留在内存供本会话迁移，不再写回磁盘。这样每次 set()
+    // 都会用干净的配置覆盖旧行，存量用户的明文 key 在下次保存时自动消失。
+    const persisted = { ...embeddingConfig };
     setAppConfig(database, EMBEDDING_CONFIG_KEY, JSON.stringify(persisted));
   };
   const embeddingConfigController = {
@@ -88,7 +94,12 @@ export async function createApp(dependencies: AppDependencies = {}) {
     : null;
   void knowledgeService?.drainEmbeddings();
   const hub = new WsHub();
-  const app = Fastify({ logger: true });
+  const app = Fastify({
+    logger: true,
+    // Default body limit: 1MB. Knowledge mirror import endpoints may need more
+    // but currently they only accept { path } so 1MB is plenty.
+    bodyLimit: 1_048_576
+  }).withTypeProvider<TypeBoxTypeProvider>();
   const aiStream = dependencies.aiStream ?? ((messages) => streamDeepSeekChat(messages));
   const aiConversationStore: AiConversationStore | null = database.kind === "sqlite" ? createAiConversationStore(database) : null;
   const aiService = createAiService({
@@ -113,6 +124,18 @@ export async function createApp(dependencies: AppDependencies = {}) {
       if (!origin || allowedOrigins.has(origin)) callback(null, true);
       else callback(null, false);
     }
+  });
+  // Helmet: sidecar serves JSON APIs (no HTML), so disable CSP.
+  // HSTS disabled because the sidecar is HTTP on localhost.
+  await app.register(helmet, {
+    contentSecurityPolicy: false,
+    hsts: false,
+  });
+  // Rate limit: guard against request storms from frontend bugs.
+  // Sidecar is single-user on localhost, so default IP key is sufficient.
+  await app.register(rateLimit, {
+    max: 200,
+    timeWindow: "1 minute",
   });
   await app.register(websocket);
 
@@ -168,6 +191,8 @@ export async function createApp(dependencies: AppDependencies = {}) {
       void ttsSpeak(feedback.text, "温柔、轻快、像陪伴学习的朋友").then((result) => {
         hub.broadcast({ type: "tts:done", payload: result });
       }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "TTS feedback failed";
+        hub.broadcast({ type: "tts:error", payload: { message, text: feedback.text } });
         app.log.warn({ error }, "TTS feedback failed");
       });
     }
@@ -189,6 +214,33 @@ export async function createApp(dependencies: AppDependencies = {}) {
   };
   const hookManager = dependencies.hookManager ?? createHookManager(hookEvents, createHookRulesStore(database));
 
+  // ── Global Error Handler ──
+  app.setErrorHandler((error, _request, reply) => {
+    const err = error as Error & { validation?: unknown };
+    // Our typed business errors: return consistent shape
+    if (isHttpError(err)) {
+      reply.code(err.statusCode).send({
+        error: err.message,
+        code: err.code
+      });
+      return;
+    }
+    // Fastify validation errors (400 from schema checks)
+    if (err.validation) {
+      reply.code(400).send({
+        error: "validation failed",
+        code: "VALIDATION_ERROR",
+        details: err.validation
+      });
+      return;
+    }
+    // Status code set by the route via reply.code() before throwing
+    const status = reply.statusCode >= 400 ? reply.statusCode : 500;
+    const message = status === 500 ? "internal server error" : err.message;
+    if (status === 500) app.log.error(err, "unhandled error");
+    reply.code(status).send({ error: message });
+  });
+
   // ── Route Registration ──
   registerHealthRoutes(app);
   registerTaskRoutes(app, database, hub);
@@ -209,6 +261,7 @@ export async function createApp(dependencies: AppDependencies = {}) {
   }
 
   app.addHook("onClose", async () => {
+    hub.close();
     hookManager.close();
     focus.close();
     if (windowTimer) clearInterval(windowTimer);

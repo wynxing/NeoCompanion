@@ -1,4 +1,4 @@
-import { createDatabase, getAppConfig, type NeoDatabase } from "@neo-companion/db";
+import { createDatabase, getAppConfig, setAppConfig, type NeoDatabase } from "@neo-companion/db";
 import type { ChatMessage } from "@neo-companion/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
@@ -49,6 +49,53 @@ describe("server app", () => {
     expect(getAppConfig(database, "embedding")).not.toContain("secret-value");
     const status = (await app.inject({ method: "GET", url: "/api/knowledge/embedding-config" })).json();
     expect(status.apiKeySource).toBe("keychain");
+  });
+
+  it("does not re-persist a legacy plaintext key when saving config", async () => {
+    // Simulate an upgraded install where a plaintext embedding key was left in
+    // app_config by an older sidecar version. createApp loads it into memory as
+    // legacyEmbeddingApiKey; the fix ensures subsequent saves never write it back.
+    const legacyDb = createDatabase(":memory:");
+    setAppConfig(legacyDb, "embedding", JSON.stringify({
+      provider: "openai",
+      baseUrl: "https://api.openai.com",
+      model: "text-embedding-3-small",
+      apiKey: "legacy-plaintext-secret"
+    }));
+    expect(getAppConfig(legacyDb, "embedding")).toContain("legacy-plaintext-secret");
+
+    const legacyApp = await createApp({
+      authToken: "test-token",
+      database: legacyDb,
+      startBackground: false,
+      aiStream: async function* () { yield "ok"; }
+    });
+    try {
+      // Saving a config change (model swap) without providing an apiKey must
+      // overwrite the stored row with a clean, key-less JSON.
+      const res = await legacyApp.inject({
+        method: "PUT",
+        url: "/api/knowledge/embedding-config",
+        headers: { authorization: "Bearer test-token" },
+        payload: { model: "text-embedding-3-large" }
+      });
+      expect(res.statusCode).toBe(200);
+
+      const stored = getAppConfig(legacyDb, "embedding");
+      expect(stored).not.toContain("legacy-plaintext-secret");
+      expect(stored).toContain("text-embedding-3-large");
+
+      // The legacy key stays in memory so the frontend bootstrap can still
+      // migrate it to the keychain this session.
+      const status = (await legacyApp.inject({
+        method: "GET",
+        url: "/api/knowledge/embedding-config",
+        headers: { authorization: "Bearer test-token" }
+      })).json();
+      expect(status.legacyMigrationRequired).toBe(true);
+    } finally {
+      await legacyApp.close();
+    }
   });
   it("serves health and task CRUD", async () => {
     const health = await app.inject({ method: "GET", url: "/health" });
