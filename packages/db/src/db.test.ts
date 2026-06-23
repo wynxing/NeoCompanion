@@ -71,6 +71,50 @@ describe.skipIf(!SQLITE_AVAILABLE)("knowledge store", () => {
     database.close();
   });
 
+  it("reorders tasks within the uncolumned lane while preserving null storage", () => {
+    const database = createDatabase(":memory:");
+    const kw = createKnowledgeStore(database);
+
+    const project = kw.createProject({ title: "uncolumned" });
+    const first = kw.createTask(project.id, "", "first");
+    const second = kw.createTask(project.id, "", "second");
+    kw.updateTask(first.id, { order: 0 });
+    kw.updateTask(second.id, { order: 1 });
+
+    kw.moveTask(second.id, "", 0);
+
+    const ordered = kw.tasksForProject(project.id);
+    expect(ordered.map((task) => task.id)).toEqual([second.id, first.id]);
+    expect(ordered.map((task) => task.order)).toEqual([0, 1]);
+    expect(ordered.map((task) => task.columnId)).toEqual(["", ""]);
+    if (database.kind === "sqlite") {
+      const rows = database.sqlite
+        .prepare('SELECT id, column_id FROM knowledge_tasks WHERE id IN (?, ?) ORDER BY "order"')
+        .all(second.id, first.id) as unknown as Array<{ id: string; column_id: string | null }>;
+      expect(rows.map((row) => row.column_id)).toEqual([null, null]);
+    }
+    database.close();
+  });
+
+  it("moves a columned task to the uncolumned lane as null storage", () => {
+    const database = createDatabase(":memory:");
+    const kw = createKnowledgeStore(database);
+
+    const project = kw.createProject({ title: "move-to-uncolumned" });
+    const column = kw.createColumn(project.id, { title: "todo", status: "todo", order: 0 });
+    const task = kw.createTask(project.id, column.id, "columned");
+
+    kw.moveTask(task.id, "", 0);
+
+    const moved = kw.tasksForProject(project.id)[0];
+    expect(moved).toMatchObject({ id: task.id, columnId: "", order: 0 });
+    if (database.kind === "sqlite") {
+      const row = database.sqlite.prepare("SELECT column_id FROM knowledge_tasks WHERE id = ?").get(task.id) as { column_id: string | null };
+      expect(row.column_id).toBeNull();
+    }
+    database.close();
+  });
+
   it("persists projects, notes, columns, tasks with mock-compatible shapes", () => {
     const database = createDatabase(":memory:");
     const kw = createKnowledgeStore(database);

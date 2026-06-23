@@ -1058,11 +1058,17 @@ export function createKnowledgeStore(database: NeoDatabase): KnowledgeStore {
     const task = sqlite.prepare("SELECT id, project_id, column_id FROM knowledge_tasks WHERE id = ?").get(taskId) as { id: string; project_id: string; column_id: string | null } | undefined;
     if (!task) return;
     const projectId = task.project_id;
-    const siblings = (sqlite.prepare('SELECT id, project_id, column_id, title, description, status, "order", linked_note_id, created_at, updated_at FROM knowledge_tasks WHERE project_id = ? AND column_id = ? ORDER BY "order"').all(projectId, targetColumnId) as unknown as KnowledgeTaskRow[]).filter((t) => t.id !== taskId);
-    const clamped = Math.max(0, Math.min(targetIndex, siblings.length));
-    siblings.splice(clamped, 0, { ...task, column_id: targetColumnId } as KnowledgeTaskRow);
-    const stmt = sqlite.prepare('UPDATE knowledge_tasks SET column_id = ?, "order" = ? WHERE id = ?');
-    siblings.forEach((t, idx) => stmt.run(targetColumnId, idx, t.id));
+    const normalizedColumnId = targetColumnId || null;
+    const siblings = (normalizedColumnId === null
+      ? sqlite.prepare('SELECT id FROM knowledge_tasks WHERE project_id = ? AND column_id IS NULL ORDER BY "order"').all(projectId)
+      : sqlite.prepare('SELECT id FROM knowledge_tasks WHERE project_id = ? AND column_id = ? ORDER BY "order"').all(projectId, normalizedColumnId)) as unknown as Array<{ id: string }>;
+    const ordered = siblings.filter((t) => t.id !== taskId);
+    const clamped = Math.max(0, Math.min(targetIndex, ordered.length));
+    ordered.splice(clamped, 0, { id: task.id });
+    withTransaction(sqlite, () => {
+      const stmt = sqlite.prepare('UPDATE knowledge_tasks SET column_id = ?, "order" = ? WHERE id = ?');
+      ordered.forEach((t, idx) => stmt.run(normalizedColumnId, idx, t.id));
+    });
   }
 
   function reindexNote(note: KnowledgeNote, chunk: (text: string) => { content: string; contentHash: string }[]): void {
