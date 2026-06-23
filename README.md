@@ -118,7 +118,7 @@ NeoCompanion 的能力由浅入深分为四层：
 
 **知识与 AI 层**——在单一本地工作空间中组织项目、Markdown 笔记、任务与看板；通过全文检索和向量检索为 AI 对话提供可核验的本地上下文。
 
-**Hook 与系统层**——安全本地多通道 Hook（HTTP / UDS / File Watcher / MQTT）；浮动权限审批气泡；本地隐私感知引擎；本地长期记忆。
+**Hook 与系统层**——本地 Hook（HTTP / WebSocket 已实现；UDS / File Watcher / MQTT 规划中）；浮动权限审批气泡；本地隐私感知引擎；本地长期记忆。
 
 ---
 
@@ -145,7 +145,7 @@ NeoCompanion 的能力由浅入深分为四层：
 | 桌面运行时 | **Tauri v2** (Rust) |
 | 前端 UI | **Vue 3** + Vite + Pinia + TanStack Query |
 | 本地服务 | **Fastify** (TypeScript Sidecar) |
-| 数据库 | **SQLite** (Drizzle ORM) |
+| 数据库 | **SQLite** (`node:sqlite` + FTS5 + sqlite-vec) |
 | AI | 聊天模型适配器 + OpenAI-compatible Embedding Adapter |
 
 架构核心：Tauri (Rust) 提供系统级能力与系统钥匙链 → Fastify (TypeScript) 处理业务逻辑、知识索引与 AI 调度 → Vue 提供 UI → SQLite 统一存储业务数据。知识工作空间已接入 FTS5 全文索引、可选 sqlite-vec 混合检索、文件镜像与带来源的 RAG。

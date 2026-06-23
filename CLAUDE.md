@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-NeoCompanion is a local-first desktop AI assistant built with **Tauri v2** (Rust) + **Vue 3** (Vite) + **Fastify** (TypeScript sidecar) + **SQLite** (Drizzle ORM).
+NeoCompanion is a local-first desktop AI assistant built with **Tauri v2** (Rust) + **Vue 3** (Vite) + **Fastify** (TypeScript sidecar) + **SQLite** (`node:sqlite`).
 
 It provides:
 
@@ -22,7 +22,7 @@ Tauri Rust Core
 Fastify Sidecar
   ├─ REST API for tasks, focus timer, AI chat, TTS, weather, hooks, windows
   ├─ WebSocket hub at /ws for streaming AI replies and companion feedback
-  └─ SQLite via Drizzle ORM
+  └─ SQLite via the built-in Node.js `node:sqlite` driver
 
 Vue 3 Frontend
   ├─ 5 views selected by ?view= query param
@@ -36,7 +36,7 @@ Vue 3 Frontend
 | `apps/desktop/src-tauri/` | Rust backend, Tauri commands, window config |
 | `apps/desktop/src/` | Vue 3 frontend, views, components, composables |
 | `packages/server-local/` | Fastify sidecar with all business logic |
-| `packages/db/` | SQLite schema and stores via Drizzle ORM |
+| `packages/db/` | SQLite schema, migrations, and stores via `node:sqlite` |
 | `packages/shared/` | Shared TypeScript types |
 | `packages/ai/` | DeepSeek streaming chat adapter |
 | `packages/tts/` | MiMo TTS adapter |
